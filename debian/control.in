@@ -1,0 +1,23 @@
+Source: postgresql-copyjit
+Section: database
+Priority: optional
+Maintainer: Pierre Ducroquet <pducroquet@entrouvert.com>
+Uploaders:
+ Pierre Ducroquet <pducroquet@entrouvert.com>,
+Build-Depends:
+ debhelper (>= 9),
+ postgresql-server-dev-all,
+Standards-Version: 4.1.0
+
+Package: postgresql-PGVERSION-copyjit
+Architecture: any
+Depends:
+ postgresql-PGVERSION,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: Postgres PGVERSION bouncer notice
+ postgresql-bouncernotice is a PostgreSQL extension allowing notification of
+ pgbouncer when specific settings are changed.
+ .
+ This package is for PostgreSQL PGVERSION.
+

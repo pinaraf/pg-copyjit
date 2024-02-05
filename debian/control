@@ -1,0 +1,58 @@
+Source: postgresql-bouncernotice
+Section: database
+Priority: optional
+Maintainer: Pierre Ducroquet <pducroquet@entrouvert.com>
+Uploaders:
+ Pierre Ducroquet <pducroquet@entrouvert.com>,
+Build-Depends:
+ debhelper (>= 9),
+ postgresql-server-dev-all,
+Standards-Version: 4.1.0
+
+Package: postgresql-13-bouncernotice
+Architecture: any
+Depends:
+ postgresql-13,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: Postgres 13 bouncer notice
+ postgresql-bouncernotice is a PostgreSQL extension allowing notification of
+ pgbouncer when specific settings are changed.
+ .
+ This package is for PostgreSQL 13.
+
+Package: postgresql-14-bouncernotice
+Architecture: any
+Depends:
+ postgresql-14,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: Postgres 14 bouncer notice
+ postgresql-bouncernotice is a PostgreSQL extension allowing notification of
+ pgbouncer when specific settings are changed.
+ .
+ This package is for PostgreSQL 14.
+
+Package: postgresql-15-bouncernotice
+Architecture: any
+Depends:
+ postgresql-15,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: Postgres 15 bouncer notice
+ postgresql-bouncernotice is a PostgreSQL extension allowing notification of
+ pgbouncer when specific settings are changed.
+ .
+ This package is for PostgreSQL 15.
+
+Package: postgresql-16-bouncernotice
+Architecture: any
+Depends:
+ postgresql-16,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: Postgres 16 bouncer notice
+ postgresql-bouncernotice is a PostgreSQL extension allowing notification of
+ pgbouncer when specific settings are changed.
+ .
+ This package is for PostgreSQL 16.

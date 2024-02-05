@@ -1,0 +1,35 @@
+#!/usr/bin/make -f
+
+# Uncomment this to turn on verbose mode.
+export DH_VERBOSE=1
+
+# Using pg_buildext
+include /usr/share/postgresql-common/pgxs_debian_control.mk
+
+# export USE_PGXS=1
+export PG_UPDATECONTROL=yes
+
+clean: debian/control
+
+.PHONY: debian/control
+
+override_dh_auto_build:
+	#+pg_buildext build build-%v
+	# nothing ?
+
+override_dh_install:
+	# build all supported versions
+	+pg_buildext loop postgresql-%v-copyjit
+
+override_dh_auto_install:
+	# nothing ?
+
+override_dh_installdocs:
+	dh_installdocs --all README.*
+
+override_dh_auto_clean:
+	+pg_buildext clean build-%v
+
+%:
+	dh $@
+
