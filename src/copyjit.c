@@ -9,6 +9,13 @@
 #include "jit/jit.h"
 #include "executor/execExpr.h"
 #include "nodes/execnodes.h"
+#include "utils/memutils.h"
+#include "utils/resowner_private.h"
+#include "utils/expandeddatum.h"
+
+#include <sys/mman.h>
+
+#include "built-stencils.h"
 
 PG_MODULE_MAGIC;
 
@@ -220,31 +227,161 @@ copyjit_reset_after_error(void)
 {
 }
 
+typedef struct CopyJitContext
+{
+	JitContext base;
+	void *code;
+	size_t code_size;
+} CopyJitContext;
+
+CopyJitContext *
+copyjit_create_context(int jitFlags)
+{
+	CopyJitContext *context;
+
+	ResourceOwnerEnlargeJIT(CurrentResourceOwner);
+
+	context = MemoryContextAllocZero(TopMemoryContext,
+									 sizeof(CopyJitContext));
+	context->base.flags = jitFlags;
+
+	/* ensure cleanup */
+	context->base.resowner = CurrentResourceOwner;
+	context->code = NULL;
+	ResourceOwnerRememberJIT(CurrentResourceOwner, PointerGetDatum(context));
+
+	return context;
+}
+
 void
 copyjit_release_context(JitContext *context)
 {
+	CopyJitContext *copyjit_context = (CopyJitContext *) context;
+	if (copyjit_context->code)
+		munmap(copyjit_context->code, copyjit_context->code_size);
+}
+
+
+static Datum
+ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
+{
+	return ((ExprStateEvalFunc) state->evalfunc_private) (state, econtext, isNull);
 }
 
 bool
 copyjit_compile_expr(ExprState *state)
 {
+	CopyJitContext *context = NULL;
 	instr_time	starttime;
 	instr_time	endtime;
+	bool canbuild = true;
+	size_t neededsize = 0;
+	void *builtcode;
+	size_t offset = 0;
+
+	PlanState  *parent = state->parent;
+	Assert(parent);
+	/* get or create JIT context */
+	if (parent->state->es_jit)
+		context = (CopyJitContext *) parent->state->es_jit;
+	else
+	{
+		context = copyjit_create_context(parent->state->es_jit_flags);
+		parent->state->es_jit = &context->base;
+	}
+
 	INSTR_TIME_SET_CURRENT(starttime);
 	elog(WARNING, "Hello from a completely empty JIT for PG using copy-patch.");
+	// TODO : use this step to build an array of offsets for each opcode.
+	// This will come in handy for the jumps
 	for (int opno = 0; opno < state->steps_len; opno++)
 	{
 		struct ExprEvalStep *op = &state->steps[opno];
 		ExprEvalOp opcode = ExecEvalStepOp(state, op);
-		elog(WARNING, "Need to build an %s - %i opcode", opcodeNames[opcode], opcode);
+		elog(WARNING, "Need to build an %s - %i opcode at %lu", opcodeNames[opcode], opcode, op);
+		/*if (opcode == EEOP_CONST) {
+			elog(WARNING, "For const, isnull = %i, value = %li", op->d.constval.isnull, op->d.constval.value);
+		} else if (opcode == EEOP_ASSIGN_TMP) {
+			elog(WARNING, "For assign_tmp, resultnum = %i", op->d.assign_tmp.resultnum);
+		}*/
+
+		if (stencils[opcode].code_size == -1) {
+			elog(WARNING, "UNSUPPORTED OPCODE");
+			canbuild = false;
+		} else {
+			neededsize += stencils[opcode].code_size;
+		}
 	}
 
+	if (canbuild) {
+		elog(WARNING, "Need %lu bytes of memory for the stencils, right?", neededsize);
+		builtcode = mmap(0, neededsize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+		context->code = builtcode;
+		context->code_size = neededsize;
+
+		for (int opno = 0 ; opno < state->steps_len ; opno++)
+		{
+			struct ExprEvalStep *op = &state->steps[opno];
+			ExprEvalOp opcode = ExecEvalStepOp(state, op);
+			elog(WARNING, "Adding stencil for %s, op address is %02x", opcodeNames[opcode], op);
+
+			memcpy(builtcode + offset, stencils[opcode].code, stencils[opcode].code_size);
+			for (int p = 0 ; p < stencils[opcode].patch_size ; p++) {
+				struct Patch *patch = &stencils[opcode].patches[p];
+
+				intptr_t target;
+				elog(WARNING, "Patch tgt %lu", patch->target);
+				switch (patch->target) {
+					case TARGET_CONST_ISNULL:
+						target = (intptr_t) &(op->d.constval.isnull);
+						break;
+					case TARGET_CONST_VALUE:
+						target = op->d.constval.value;
+						break;
+					case TARGET_RESULTNUM:
+						target = op->d.assign_tmp.resultnum;
+						break;
+					case TARGET_OP:
+						target = (intptr_t) op;
+						break;
+					case TARGET_MakeExpandedObjectReadOnlyInternal:
+						target = (intptr_t) &MakeExpandedObjectReadOnlyInternal;
+						break;
+					case TARGET_NEXT_CALL:
+						target = (intptr_t) builtcode + offset + stencils[opcode].code_size;
+						break;
+					default:
+						elog(ERROR, "Unsupported target");
+						break;
+				};
+
+				switch (patch->relkind) {
+					case RELKIND_R_X86_64_64:
+						elog(WARNING, "Patching %02x (%lu) at offset %lu with relkind amd64", target, target, patch->offset);
+						memcpy(builtcode + offset + patch->offset, &target, 8);
+						break;
+					default:
+						elog(ERROR, "Unsupported relkind");
+						break;
+				}
+			}
+			offset += stencils[opcode].code_size;
+		}
+		elog(WARNING, "Result of mprotect is %i", mprotect(builtcode, neededsize, PROT_EXEC));
+		state->evalfunc_private = builtcode;
+		state->evalfunc = ExecRunCompiledExpr;
+	}
+
+	// built function signature :
+	/*typedef Datum (*ExprStateEvalFunc) (struct ExprState *expression,
+									struct ExprContext *econtext,
+									bool *isNull);*/
 
 	INSTR_TIME_SET_CURRENT(endtime);
 	INSTR_TIME_ACCUM_DIFF(context->base.instr.generation_counter,
 						  endtime, starttime);
 
-	return false;
+	return canbuild;
 }
 
 /*
@@ -261,6 +398,7 @@ _PG_jit_provider_init(JitProviderCallbacks *cb)
 void
 _PG_init(void)
 {
+	initialize_stencils();
 }
 
 void
