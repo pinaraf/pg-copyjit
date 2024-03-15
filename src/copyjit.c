@@ -294,6 +294,7 @@ copyjit_compile_expr(ExprState *state)
 	elog(WARNING, "Hello from a completely empty JIT for PG using copy-patch.");
 	// TODO : use this step to build an array of offsets for each opcode.
 	// This will come in handy for the jumps
+	int *offsets = malloc(sizeof(int) * state->steps_len);
 	for (int opno = 0; opno < state->steps_len; opno++)
 	{
 		struct ExprEvalStep *op = &state->steps[opno];
@@ -309,6 +310,7 @@ copyjit_compile_expr(ExprState *state)
 			elog(WARNING, "UNSUPPORTED OPCODE");
 			canbuild = false;
 		} else {
+			offsets[opno] = neededsize;
 			neededsize += stencils[opcode].code_size;
 		}
 	}
@@ -333,7 +335,7 @@ copyjit_compile_expr(ExprState *state)
 				elog(WARNING, "Patch tgt %lu", patch->target);
 				switch (patch->target) {
 					case TARGET_CONST_ISNULL:
-						target = (intptr_t) &(op->d.constval.isnull);
+						target = op->d.constval.isnull;
 						break;
 					case TARGET_CONST_VALUE:
 						target = op->d.constval.value;
@@ -347,8 +349,31 @@ copyjit_compile_expr(ExprState *state)
 					case TARGET_MakeExpandedObjectReadOnlyInternal:
 						target = (intptr_t) &MakeExpandedObjectReadOnlyInternal;
 						break;
+					case TARGET_slot_getsomeattrs_int:
+						target = (intptr_t) &slot_getsomeattrs_int;
+						break;
 					case TARGET_NEXT_CALL:
 						target = (intptr_t) builtcode + offset + stencils[opcode].code_size;
+						break;
+					case TARGET_JUMP_DONE:
+						// FUN
+						target = (intptr_t) builtcode + offsets[op->d.qualexpr.jumpdone];
+						break;
+					case TARGET_RESULTSLOT_VALUES:
+						if (opcode == EEOP_ASSIGN_TMP || opcode == EEOP_ASSIGN_TMP_MAKE_RO)
+							target = (intptr_t) &(state->resultslot->tts_values[op->d.assign_tmp.resultnum]);
+						else if (opcode == EEOP_ASSIGN_SCAN_VAR)
+							target = (intptr_t) &(state->resultslot->tts_values[op->d.assign_var.resultnum]);
+						else
+							elog(ERROR, "Unsupported target TARGET_RESULTSLOT_VALUES in opcode %s", opcodeNames[opcode]);
+						break;
+					case TARGET_RESULTSLOT_ISNULL:
+						if (opcode == EEOP_ASSIGN_TMP || opcode == EEOP_ASSIGN_TMP_MAKE_RO)
+							target = (intptr_t) &(state->resultslot->tts_isnull[op->d.assign_tmp.resultnum]);
+						else if (opcode == EEOP_ASSIGN_SCAN_VAR)
+							target = (intptr_t) &(state->resultslot->tts_isnull[op->d.assign_var.resultnum]);
+						else
+							elog(ERROR, "Unsupported target TARGET_RESULTSLOT_ISNULL in opcode %s", opcodeNames[opcode]);
 						break;
 					default:
 						elog(ERROR, "Unsupported target");
@@ -369,18 +394,16 @@ copyjit_compile_expr(ExprState *state)
 		}
 		elog(WARNING, "Result of mprotect is %i", mprotect(builtcode, neededsize, PROT_EXEC));
 		state->evalfunc_private = builtcode;
-		state->evalfunc = ExecRunCompiledExpr;
+		state->evalfunc = builtcode; // When this one starts being usefull, we can bring it back. ExecRunCompiledExpr;
 	}
-
-	// built function signature :
-	/*typedef Datum (*ExprStateEvalFunc) (struct ExprState *expression,
-									struct ExprContext *econtext,
-									bool *isNull);*/
+	free(offsets);
 
 	INSTR_TIME_SET_CURRENT(endtime);
+	INSTR_TIME_SET_ZERO(context->base.instr.generation_counter);
 	INSTR_TIME_ACCUM_DIFF(context->base.instr.generation_counter,
 						  endtime, starttime);
 
+	elog(WARNING, "Total JIT duration is %lius", INSTR_TIME_GET_MICROSEC(context->base.instr.generation_counter));
 	return canbuild;
 }
 

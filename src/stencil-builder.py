@@ -21,7 +21,12 @@ typedef enum Target {
     TARGET_OP,
     TARGET_NEXT_CALL,
     TARGET_JUMP_DONE,
-    TARGET_MakeExpandedObjectReadOnlyInternal,  // TODO : replace with a TARGET_FUNCTION_CALL and a Patch::function_name
+    TARGET_RESULTSLOT_VALUES,
+    TARGET_RESULTSLOT_ISNULL,
+    TARGET_SCANSLOT_VALUES,
+    TARGET_SCANSLOT_ISNULL,
+    TARGET_MakeExpandedObjectReadOnlyInternal,  // TODO : replace this and followings with a TARGET_FUNCTION_CALL and a Patch::function_name ?
+    TARGET_slot_getsomeattrs_int,
 } Target;
 
 typedef struct Patch {
