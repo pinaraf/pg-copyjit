@@ -291,20 +291,14 @@ copyjit_compile_expr(ExprState *state)
 	}
 
 	INSTR_TIME_SET_CURRENT(starttime);
-	elog(WARNING, "Hello from a completely empty JIT for PG using copy-patch.");
-	// TODO : use this step to build an array of offsets for each opcode.
-	// This will come in handy for the jumps
+
+	// This offset array is usefull later when jumps appear...
 	int *offsets = malloc(sizeof(int) * state->steps_len);
 	for (int opno = 0; opno < state->steps_len; opno++)
 	{
 		struct ExprEvalStep *op = &state->steps[opno];
 		ExprEvalOp opcode = ExecEvalStepOp(state, op);
 		elog(WARNING, "Need to build an %s - %i opcode at %lu", opcodeNames[opcode], opcode, op);
-		/*if (opcode == EEOP_CONST) {
-			elog(WARNING, "For const, isnull = %i, value = %li", op->d.constval.isnull, op->d.constval.value);
-		} else if (opcode == EEOP_ASSIGN_TMP) {
-			elog(WARNING, "For assign_tmp, resultnum = %i", op->d.assign_tmp.resultnum);
-		}*/
 
 		if (stencils[opcode].code_size == -1) {
 			elog(WARNING, "UNSUPPORTED OPCODE");
@@ -315,8 +309,8 @@ copyjit_compile_expr(ExprState *state)
 		}
 	}
 
+	// All opcodes are accounted for, we can proceed
 	if (canbuild) {
-		elog(WARNING, "Need %lu bytes of memory for the stencils, right?", neededsize);
 		builtcode = mmap(0, neededsize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
 		context->code = builtcode;
 		context->code_size = neededsize;
@@ -374,6 +368,17 @@ copyjit_compile_expr(ExprState *state)
 							target = (intptr_t) &(state->resultslot->tts_isnull[op->d.assign_var.resultnum]);
 						else
 							elog(ERROR, "Unsupported target TARGET_RESULTSLOT_ISNULL in opcode %s", opcodeNames[opcode]);
+						break;
+					case TARGET_FUNC_CALL:
+						target = (intptr_t) op->d.func.fn_addr;
+						break;
+					case TARGET_ATTNUM:
+						if (opcode == EEOP_ASSIGN_SCAN_VAR)
+							target = op->d.assign_var.attnum;
+						else if (opcode == EEOP_SCAN_VAR)
+							target = op->d.var.attnum;
+						else
+							elog(ERROR, "Unsupported target TARGET_ATTNUM in opcode %s", opcodeNames[opcode]);
 						break;
 					default:
 						elog(ERROR, "Unsupported target");

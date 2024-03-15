@@ -23,6 +23,7 @@
 extern void CONST_ISNULL;
 extern uintptr_t CONST_VALUE;
 extern int RESULTNUM;
+extern int ATTNUM;
 extern Datum RESULTSLOT_VALUES;
 extern bool RESULTSLOT_ISNULL;
 
@@ -30,6 +31,7 @@ extern ExprEvalStep op;
 
 extern Datum NEXT_CALL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
 extern Datum JUMP_DONE (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
+extern Datum FUNC_CALL (FunctionCallInfo fcinfo);
 
 Datum stencil_EEOP_CONST (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
@@ -74,7 +76,7 @@ Datum stencil_EEOP_FUNCEXPR (struct ExprState *expression, struct ExprContext *e
 	Datum d;
 
 	fcinfo->isnull = false;
-	d = op.d.func.fn_addr(fcinfo);
+	d = FUNC_CALL(fcinfo);
 	*op.resvalue = d;
 	*op.resnull = fcinfo->isnull;
 
@@ -99,7 +101,7 @@ Datum stencil_EEOP_FUNCEXPR_STRICT (struct ExprState *expression, struct ExprCon
 		}
 	}
 	fcinfo->isnull = false;
-	d = op.d.func.fn_addr(fcinfo);
+	d = FUNC_CALL(fcinfo);
 	*op.resvalue = d;
 	*op.resnull = fcinfo->isnull;
 
@@ -141,12 +143,11 @@ Datum stencil_EEOP_QUAL (struct ExprState *expression, struct ExprContext *econt
 Datum stencil_EEOP_SCAN_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	TupleTableSlot * scanslot = econtext->ecxt_scantuple;
-	int			attnum = op.d.var.attnum;
 
 	/* See EEOP_INNER_VAR comments */
 
-	*op.resvalue = scanslot->tts_values[attnum];
-	*op.resnull = scanslot->tts_isnull[attnum];
+	*op.resvalue = scanslot->tts_values[ATTNUM];
+	*op.resnull = scanslot->tts_isnull[ATTNUM];
 
 	__attribute__((musttail))
     return NEXT_CALL(expression, econtext, isNull);
@@ -199,44 +200,31 @@ Datum stencil_EEOP_ASSIGN_SCAN_VAR (struct ExprState *expression, struct ExprCon
 	resultslot->tts_isnull[resultnum] = scanslot->tts_isnull[attnum];
 #else
 	/*
- 2b0:   48 8b 46 08             mov    0x8(%rsi),%rax
- 2b4:   48 b9 00 00 00 00 00    movabs $0x0,%rcx
- 2bb:   00 00 00
- 2be:   48 63 49 1c             movslq 0x1c(%rcx),%rcx
- 2c2:   4c 8b 40 18             mov    0x18(%rax),%r8
- 2c6:   4d 8b 04 c8             mov    (%r8,%rcx,8),%r8
- 2ca:   49 b9 00 00 00 00 00    movabs $0x0,%r9
- 2d1:   00 00 00
- 2d4:   4d 89 01                mov    %r8,(%r9)
- 2d7:   48 8b 40 20             mov    0x20(%rax),%rax
- 2db:   0f b6 04 08             movzbl (%rax,%rcx,1),%eax
- 2df:   48 b9 00 00 00 00 00    movabs $0x0,%rcx
- 2e6:   00 00 00
- 2e9:   88 01                   mov    %al,(%rcx)
+ 2d0:   48 8b 46 08             mov    0x8(%rsi),%rax
+ 2d4:   48 8b 48 18             mov    0x18(%rax),%rcx
+ 2d8:   49 b8 00 00 00 00 00    movabs $0x0,%r8
+ 2df:   00 00 00
+ 2e2:   4d 63 00                movslq (%r8),%r8
+ 2e5:   4a 8b 0c c1             mov    (%rcx,%r8,8),%rcx
+ 2e9:   49 b9 00 00 00 00 00    movabs $0x0,%r9
+ 2f0:   00 00 00
+ 2f3:   49 89 09                mov    %rcx,(%r9)
+ 2f6:   48 8b 40 20             mov    0x20(%rax),%rax
+ 2fa:   42 0f b6 04 00          movzbl (%rax,%r8,1),%eax
+ 2ff:   48 b9 00 00 00 00 00    movabs $0x0,%rcx
+ 306:   00 00 00
+ 309:   88 01                   mov    %al,(%rcx)
 */
 	TupleTableSlot *scanslot = econtext->ecxt_scantuple;
-	int			attnum = op.d.assign_var.attnum;
 
 	/*
 	* We do not need CheckVarSlotCompatibility here; that was taken
 	* care of at compilation time.  But see EEOP_INNER_VAR comments.
 	*/
-	RESULTSLOT_VALUES = scanslot->tts_values[attnum];
-	RESULTSLOT_ISNULL = scanslot->tts_isnull[attnum];
+	RESULTSLOT_VALUES = scanslot->tts_values[ATTNUM];
+	RESULTSLOT_ISNULL = scanslot->tts_isnull[ATTNUM];
 #endif
 
 	__attribute__((musttail))
     return NEXT_CALL(expression, econtext, isNull);
 }
-
-
-// Needed for SELECT a FROM b :
-/*
-WARNING:  Need to build an EEOP_SCAN_FETCHSOME - 3 opcode at 94264824831560
-WARNING:  UNSUPPORTED OPCODE
-WARNING:  Need to build an EEOP_ASSIGN_SCAN_VAR - 13 opcode at 94264824831624
-WARNING:  UNSUPPORTED OPCODE
-WARNING:  Need to build an EEOP_DONE - 0 opcode at 94264824831688
-*/
-
-
