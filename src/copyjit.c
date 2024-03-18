@@ -22,6 +22,7 @@ PG_MODULE_MAGIC;
 void _PG_init(void);
 void _PG_fini(void);
 
+
 static const char *opcodeNames[] = {
 	"EEOP_DONE",
 
@@ -276,8 +277,10 @@ copyjit_compile_expr(ExprState *state)
 	instr_time	endtime;
 	bool canbuild = true;
 	size_t neededsize = 0;
-	void *builtcode;
+	unsigned char *builtcode;
 	size_t offset = 0;
+	int mprotect_res;
+	uintptr_t *targetLocation;
 
 	PlanState  *parent = state->parent;
 	Assert(parent);
@@ -298,7 +301,7 @@ copyjit_compile_expr(ExprState *state)
 	{
 		struct ExprEvalStep *op = &state->steps[opno];
 		ExprEvalOp opcode = ExecEvalStepOp(state, op);
-		elog(WARNING, "Need to build an %s - %i opcode at %lu", opcodeNames[opcode], opcode, op);
+		//elog(WARNING, "Need to build an %s - %i opcode at %lu", opcodeNames[opcode], opcode, op);
 
 		if (stencils[opcode].code_size == -1) {
 			elog(WARNING, "UNSUPPORTED OPCODE");
@@ -319,14 +322,14 @@ copyjit_compile_expr(ExprState *state)
 		{
 			struct ExprEvalStep *op = &state->steps[opno];
 			ExprEvalOp opcode = ExecEvalStepOp(state, op);
-			elog(WARNING, "Adding stencil for %s, op address is %02x", opcodeNames[opcode], op);
+			//elog(WARNING, "Adding stencil for %s, op address is %02x", opcodeNames[opcode], op);
 
 			memcpy(builtcode + offset, stencils[opcode].code, stencils[opcode].code_size);
 			for (int p = 0 ; p < stencils[opcode].patch_size ; p++) {
 				struct Patch *patch = &stencils[opcode].patches[p];
 
 				intptr_t target;
-				elog(WARNING, "Patch tgt %lu", patch->target);
+				//elog(WARNING, "Patch tgt %lu", patch->target);
 				switch (patch->target) {
 					case TARGET_CONST_ISNULL:
 						target = op->d.constval.isnull;
@@ -350,7 +353,6 @@ copyjit_compile_expr(ExprState *state)
 						target = (intptr_t) builtcode + offset + stencils[opcode].code_size;
 						break;
 					case TARGET_JUMP_DONE:
-						// FUN
 						target = (intptr_t) builtcode + offsets[op->d.qualexpr.jumpdone];
 						break;
 					case TARGET_RESULTSLOT_VALUES:
@@ -387,8 +389,19 @@ copyjit_compile_expr(ExprState *state)
 
 				switch (patch->relkind) {
 					case RELKIND_R_X86_64_64:
-						elog(WARNING, "Patching %02x (%lu) at offset %lu with relkind amd64", target, target, patch->offset);
-						memcpy(builtcode + offset + patch->offset, &target, 8);
+						//elog(WARNING, "Patching %02x (%lu) at offset %lu with relkind amd64", target, target, patch->offset);
+						//elog(WARNING, "builtcode at %lu, offset is %lu, patch offset is %lu", (intptr_t) builtcode, offset, patch->offset);
+						//targetLocation = (uintptr_t*) builtcode[offset + patch->offset];
+						//*targetLocation = target;
+						builtcode[offset + patch->offset + 7] = (target & 0xFF00000000000000) >> 56;
+						builtcode[offset + patch->offset + 6] = (target & 0x00FF000000000000) >> 48;
+						builtcode[offset + patch->offset + 5] = (target & 0x0000FF0000000000) >> 40;
+						builtcode[offset + patch->offset + 4] = (target & 0x000000FF00000000) >> 32;
+						builtcode[offset + patch->offset + 3] = (target & 0x00000000FF000000) >> 24;
+						builtcode[offset + patch->offset + 2] = (target & 0x0000000000FF0000) >> 16;
+						builtcode[offset + patch->offset + 1] = (target & 0x000000000000FF00) >> 8;
+						builtcode[offset + patch->offset + 0] = (target & 0x00000000000000FF) >> 0;
+						//memcpy(builtcode + offset + patch->offset, &target, 8);
 						break;
 					default:
 						elog(ERROR, "Unsupported relkind");
@@ -397,7 +410,9 @@ copyjit_compile_expr(ExprState *state)
 			}
 			offset += stencils[opcode].code_size;
 		}
-		elog(WARNING, "Result of mprotect is %i", mprotect(builtcode, neededsize, PROT_EXEC));
+		mprotect_res = mprotect(builtcode, neededsize, PROT_EXEC);
+
+		//elog(WARNING, "Result of mprotect is %i", mprotect_res);
 		state->evalfunc_private = builtcode;
 		state->evalfunc = builtcode; // When this one starts being usefull, we can bring it back. ExecRunCompiledExpr;
 	}
@@ -408,7 +423,7 @@ copyjit_compile_expr(ExprState *state)
 	INSTR_TIME_ACCUM_DIFF(context->base.instr.generation_counter,
 						  endtime, starttime);
 
-	elog(WARNING, "Total JIT duration is %lius", INSTR_TIME_GET_MICROSEC(context->base.instr.generation_counter));
+	//elog(WARNING, "Total JIT duration is %lius", INSTR_TIME_GET_MICROSEC(context->base.instr.generation_counter));
 	return canbuild;
 }
 

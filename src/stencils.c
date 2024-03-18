@@ -143,11 +143,12 @@ Datum stencil_EEOP_QUAL (struct ExprState *expression, struct ExprContext *econt
 Datum stencil_EEOP_SCAN_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	TupleTableSlot * scanslot = econtext->ecxt_scantuple;
+	int                     attnum = op.d.var.attnum;
 
 	/* See EEOP_INNER_VAR comments */
 
-	*op.resvalue = scanslot->tts_values[ATTNUM];
-	*op.resnull = scanslot->tts_isnull[ATTNUM];
+	*op.resvalue = scanslot->tts_values[attnum];
+	*op.resnull = scanslot->tts_isnull[attnum];
 
 	__attribute__((musttail))
     return NEXT_CALL(expression, econtext, isNull);
@@ -216,13 +217,14 @@ Datum stencil_EEOP_ASSIGN_SCAN_VAR (struct ExprState *expression, struct ExprCon
  309:   88 01                   mov    %al,(%rcx)
 */
 	TupleTableSlot *scanslot = econtext->ecxt_scantuple;
+	int			attnum = op.d.assign_var.attnum;
 
 	/*
 	* We do not need CheckVarSlotCompatibility here; that was taken
 	* care of at compilation time.  But see EEOP_INNER_VAR comments.
 	*/
-	RESULTSLOT_VALUES = scanslot->tts_values[ATTNUM];
-	RESULTSLOT_ISNULL = scanslot->tts_isnull[ATTNUM];
+	RESULTSLOT_VALUES = scanslot->tts_values[attnum];
+	RESULTSLOT_ISNULL = scanslot->tts_isnull[attnum];
 #endif
 
 	__attribute__((musttail))
