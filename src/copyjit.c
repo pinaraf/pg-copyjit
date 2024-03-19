@@ -304,7 +304,7 @@ copyjit_compile_expr(ExprState *state)
 		//elog(WARNING, "Need to build an %s - %i opcode at %lu", opcodeNames[opcode], opcode, op);
 
 		if (stencils[opcode].code_size == -1) {
-			elog(WARNING, "UNSUPPORTED OPCODE");
+			elog(WARNING, "UNSUPPORTED OPCODE %s", opcodeNames[opcode]);
 			canbuild = false;
 		} else {
 			offsets[opno] = neededsize;
@@ -423,7 +423,7 @@ copyjit_compile_expr(ExprState *state)
 	INSTR_TIME_ACCUM_DIFF(context->base.instr.generation_counter,
 						  endtime, starttime);
 
-	//elog(WARNING, "Total JIT duration is %lius", INSTR_TIME_GET_MICROSEC(context->base.instr.generation_counter));
+	elog(WARNING, "Total JIT duration is %lius", INSTR_TIME_GET_MICROSEC(context->base.instr.generation_counter));
 	return canbuild;
 }
 

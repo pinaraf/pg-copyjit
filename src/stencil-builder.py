@@ -86,7 +86,9 @@ class Stencil(object):
     def strip_code(self):
         # first, find the NEXT_CALL patch
         next_call_patch = None
+        used_targets = set()
         for patch in self.patches:
+            used_targets.add(patch.target)
             if patch.target == "NEXT_CALL":
                 assert(next_call_patch is None)
                 next_call_patch = patch
@@ -105,6 +107,10 @@ class Stencil(object):
             # now we know where it ends : at patch.offset - 2
             self.code = self.code[:next_call_patch.offset - 2]
             self.patches = self.patches[:-1]
+        # XXX TODO : extremely hazardous hack
+        elif self.code[-2:] == [0xff, 0xe0] and not "TARGET_JUMP_DONE" in used_targets:
+            # last opcode is jmp *rax, remove it because we should never jump somewhere else
+            self.code = self.code[:-2]
 
     def dump_code(self):
         print("const unsigned char %s__code[%s] = {%s};" % (self.name, len(self.code), ", ".join([hex(x) for x in self.code])))
