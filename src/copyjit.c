@@ -358,7 +358,7 @@ copyjit_compile_expr(ExprState *state)
 					case TARGET_RESULTSLOT_VALUES:
 						if (opcode == EEOP_ASSIGN_TMP || opcode == EEOP_ASSIGN_TMP_MAKE_RO)
 							target = (intptr_t) &(state->resultslot->tts_values[op->d.assign_tmp.resultnum]);
-						else if (opcode == EEOP_ASSIGN_SCAN_VAR)
+						else if (opcode == EEOP_ASSIGN_SCAN_VAR || opcode == EEOP_ASSIGN_INNER_VAR || opcode == EEOP_ASSIGN_OUTER_VAR)
 							target = (intptr_t) &(state->resultslot->tts_values[op->d.assign_var.resultnum]);
 						else
 							elog(ERROR, "Unsupported target TARGET_RESULTSLOT_VALUES in opcode %s", opcodeNames[opcode]);
@@ -366,7 +366,7 @@ copyjit_compile_expr(ExprState *state)
 					case TARGET_RESULTSLOT_ISNULL:
 						if (opcode == EEOP_ASSIGN_TMP || opcode == EEOP_ASSIGN_TMP_MAKE_RO)
 							target = (intptr_t) &(state->resultslot->tts_isnull[op->d.assign_tmp.resultnum]);
-						else if (opcode == EEOP_ASSIGN_SCAN_VAR)
+						else if (opcode == EEOP_ASSIGN_SCAN_VAR || opcode == EEOP_ASSIGN_INNER_VAR || opcode == EEOP_ASSIGN_OUTER_VAR)
 							target = (intptr_t) &(state->resultslot->tts_isnull[op->d.assign_var.resultnum]);
 						else
 							elog(ERROR, "Unsupported target TARGET_RESULTSLOT_ISNULL in opcode %s", opcodeNames[opcode]);
@@ -374,8 +374,12 @@ copyjit_compile_expr(ExprState *state)
 					case TARGET_FUNC_CALL:
 						target = (intptr_t) op->d.func.fn_addr;
 						break;
+					case TARGET_FUNC_NARGS:
+						target = (intptr_t) op->d.func.nargs;
+						break;
+
 					case TARGET_ATTNUM:
-						if (opcode == EEOP_ASSIGN_SCAN_VAR)
+						if (opcode == EEOP_ASSIGN_SCAN_VAR || opcode == EEOP_ASSIGN_INNER_VAR || opcode == EEOP_ASSIGN_OUTER_VAR)
 							target = op->d.assign_var.attnum;
 						else if (opcode == EEOP_SCAN_VAR)
 							target = op->d.var.attnum;
