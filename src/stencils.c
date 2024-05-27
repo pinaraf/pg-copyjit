@@ -30,9 +30,15 @@ extern int FUNC_NARGS;
 
 extern ExprEvalStep op;
 
-extern Datum NEXT_CALL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
-extern Datum JUMP_DONE (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
-extern Datum FUNC_CALL (FunctionCallInfo fcinfo);
+extern Datum NEXT_CALL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
+extern Datum JUMP_DONE   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
+extern Datum FUNC_CALL   (FunctionCallInfo fcinfo);
+
+Datum stencil_EEOP_DONE (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+    *isNull = expression->resnull;
+    return expression->resvalue;
+}
 
 Datum stencil_EEOP_CONST (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
@@ -46,8 +52,10 @@ Datum stencil_EEOP_CONST (struct ExprState *expression, struct ExprContext *econ
 
 Datum stencil_EEOP_ASSIGN_TMP (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
-	RESULTSLOT_VALUES = expression->resvalue;
-	RESULTSLOT_ISNULL = expression->resnull;
+	//RESULTSLOT_VALUES = expression->resvalue;
+	expression->resultslot->tts_values[op.d.assign_tmp.resultnum] = expression->resvalue;
+	//RESULTSLOT_ISNULL = expression->resnull;
+	expression->resultslot->tts_isnull[op.d.assign_tmp.resultnum] = expression->resnull;
 
     __attribute__((musttail))
     return NEXT_CALL(expression, econtext, isNull);
@@ -55,25 +63,19 @@ Datum stencil_EEOP_ASSIGN_TMP (struct ExprState *expression, struct ExprContext 
 
 Datum stencil_EEOP_ASSIGN_TMP_MAKE_RO (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
-	RESULTSLOT_ISNULL = expression->resnull;
+	expression->resultslot->tts_isnull[op.d.assign_tmp.resultnum] = expression->resnull;
 	if (!expression->resnull)
-		RESULTSLOT_VALUES = MakeExpandedObjectReadOnlyInternal(expression->resvalue);
+		expression->resultslot->tts_values[op.d.assign_tmp.resultnum] = MakeExpandedObjectReadOnlyInternal(expression->resvalue);
 	else
-		RESULTSLOT_VALUES = expression->resvalue;
+		expression->resultslot->tts_values[op.d.assign_tmp.resultnum] = expression->resvalue;
 
     __attribute__((musttail))
     return NEXT_CALL(expression, econtext, isNull);
 }
 
-Datum stencil_EEOP_DONE (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
-{
-    *isNull = expression->resnull;
-    return expression->resvalue;
-}
-
 Datum stencil_EEOP_FUNCEXPR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
-	FunctionCallInfo fcinfo = op.d.func.finfo;
+	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
 	Datum d;
 
 	fcinfo->isnull = false;
@@ -85,11 +87,13 @@ Datum stencil_EEOP_FUNCEXPR (struct ExprState *expression, struct ExprContext *e
     return NEXT_CALL(expression, econtext, isNull);
 }
 
+// Idée : remplacer par un stencil de vérification de null, faire un unroll...
+
 Datum stencil_EEOP_FUNCEXPR_STRICT (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
-	FunctionCallInfo fcinfo = op.d.func.finfo;
+	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
 	NullableDatum *args = fcinfo->args;
-	int			nargs = (int) ((intptr_t) &FUNC_NARGS);
+	int			nargs = op.d.func.nargs;
 	Datum		d;
 
 	/* strict function, so check for NULL args */
@@ -101,6 +105,7 @@ Datum stencil_EEOP_FUNCEXPR_STRICT (struct ExprState *expression, struct ExprCon
 			goto strictfail;
 		}
 	}
+
 	fcinfo->isnull = false;
 	d = FUNC_CALL(fcinfo);
 	*op.resvalue = d;
@@ -140,21 +145,19 @@ Datum stencil_EEOP_QUAL (struct ExprState *expression, struct ExprContext *econt
 
 Datum stencil_EEOP_SCAN_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
-	TupleTableSlot * scanslot = econtext->ecxt_scantuple;
+	TupleTableSlot *scanslot = econtext->ecxt_scantuple;
 
 	/* See EEOP_INNER_VAR comments */
-
-	*op.resvalue = scanslot->tts_values[(intptr_t) &ATTNUM];
-	*op.resnull = scanslot->tts_isnull[(intptr_t) &ATTNUM];
-
+	int attnum = op.d.var.attnum;
+	*op.resvalue = scanslot->tts_values[attnum];
+	*op.resnull = scanslot->tts_isnull[attnum];
 	__attribute__((musttail))
     return NEXT_CALL(expression, econtext, isNull);
 }
-#if 1
+
 Datum stencil_EEOP_SCAN_FETCHSOME (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	TupleTableSlot * scanslot = econtext->ecxt_scantuple;
-	// Not implemented, not needed, don't care, don't know ? CheckOpSlotCompatibility(op, scanslot);
 
 	// Note : this is were deforming will need to happen
 	slot_getsomeattrs(scanslot, op.d.fetch.last_var);
@@ -162,7 +165,7 @@ Datum stencil_EEOP_SCAN_FETCHSOME (struct ExprState *expression, struct ExprCont
 	__attribute__((musttail))
     return NEXT_CALL(expression, econtext, isNull);
 }
-#else
+
 Datum stencil_EEOP_ASSIGN_SCAN_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	TupleTableSlot *scanslot = econtext->ecxt_scantuple;
@@ -171,13 +174,14 @@ Datum stencil_EEOP_ASSIGN_SCAN_VAR (struct ExprState *expression, struct ExprCon
 	* We do not need CheckVarSlotCompatibility here; that was taken
 	* care of at compilation time.  But see EEOP_INNER_VAR comments.
 	*/
-	RESULTSLOT_VALUES = scanslot->tts_values[(intptr_t) &ATTNUM];
-	RESULTSLOT_ISNULL = scanslot->tts_isnull[(intptr_t) &ATTNUM];
+	expression->resultslot->tts_values[op.d.assign_var.resultnum] = scanslot->tts_values[op.d.assign_var.attnum];
+	expression->resultslot->tts_isnull[op.d.assign_var.resultnum] = scanslot->tts_isnull[op.d.assign_var.attnum];
+	//RESULTSLOT_VALUES = scanslot->tts_values[op.d.assign_var.attnum];
+	//RESULTSLOT_ISNULL = scanslot->tts_isnull[op.d.assign_var.attnum];
 
 	__attribute__((musttail))
     return NEXT_CALL(expression, econtext, isNull);
 }
-
 
 Datum stencil_EEOP_NULLTEST_ISNULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
@@ -187,7 +191,6 @@ Datum stencil_EEOP_NULLTEST_ISNULL (struct ExprState *expression, struct ExprCon
 	__attribute__((musttail))
     return NEXT_CALL(expression, econtext, isNull);
 }
-
 
 Datum stencil_EEOP_NULLTEST_ISNOTNULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
@@ -202,15 +205,60 @@ Datum stencil_EEOP_ASSIGN_INNER_VAR (struct ExprState *expression, struct ExprCo
 {
 	TupleTableSlot *innerslot = econtext->ecxt_innertuple;
 
-	RESULTSLOT_VALUES = innerslot->tts_values[(intptr_t) &ATTNUM];
-	RESULTSLOT_ISNULL = innerslot->tts_isnull[(intptr_t) &ATTNUM];
+	RESULTSLOT_VALUES = innerslot->tts_values[op.d.assign_var.attnum];
+	RESULTSLOT_ISNULL = innerslot->tts_isnull[op.d.assign_var.attnum];
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
 }
 
 Datum stencil_EEOP_ASSIGN_OUTER_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	TupleTableSlot *outerslot = econtext->ecxt_outertuple;
 
-	RESULTSLOT_VALUES = outerslot->tts_values[(intptr_t) &ATTNUM];
-	RESULTSLOT_ISNULL = outerslot->tts_isnull[(intptr_t) &ATTNUM];
+	RESULTSLOT_VALUES = outerslot->tts_values[op.d.assign_var.attnum];
+	RESULTSLOT_ISNULL = outerslot->tts_isnull[op.d.assign_var.attnum];
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
 }
-#endif
+
+Datum stencil_EEOP_SCALARARRAYOP (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	ExecEvalScalarArrayOp(expression, &op);
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum stencil_EEOP_CASE_TESTVAL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	if (op.d.casetest.value)
+	{
+		*op.resvalue = *op.d.casetest.value;
+		*op.resnull = *op.d.casetest.isnull;
+	}
+	else
+	{
+		*op.resvalue = econtext->caseValue_datum;
+		*op.resnull = econtext->caseValue_isNull;
+	}
+
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum stencil_EEOP_JUMP_IF_NOT_TRUE (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	if (*op.resnull || !DatumGetBool(*op.resvalue))
+		__attribute__((musttail))
+		return JUMP_DONE(expression, econtext, isNull);
+
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+
+}
+
+Datum stencil_EEOP_JUMP (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	__attribute__((musttail))
+    return JUMP_DONE(expression, econtext, isNull);
+}
+

@@ -25,10 +25,12 @@ typedef enum Target {
     TARGET_FUNC_INFO,
     TARGET_FUNC_NARGS,
     TARGET_JUMP_DONE,
+    TARGET_JUMP_TARGET,
     TARGET_RESULTSLOT_VALUES,
     TARGET_RESULTSLOT_ISNULL,
     TARGET_MakeExpandedObjectReadOnlyInternal,  // TODO : replace this and followings with a TARGET_FUNCTION_CALL and a Patch::function_name ?
     TARGET_slot_getsomeattrs_int,
+    TARGET_ExecEvalScalarArrayOp,               // TODO : used as is, should be reimplemented but I wanted to show it can be quick this way
 } Target;
 
 typedef struct Patch {
@@ -110,7 +112,7 @@ class Stencil(object):
             self.code = self.code[:next_call_patch.offset - 2]
             self.patches = self.patches[:-1]
         # XXX TODO : extremely hazardous hack
-        elif self.code[-2:] == [0xff, 0xe0] and not "TARGET_JUMP_DONE" in used_targets:
+        elif False and self.code[-2:] == [0xff, 0xe0] and not "TARGET_JUMP_DONE" in used_targets:
             # last opcode is jmp *rax, remove it because we should never jump somewhere else
             self.code = self.code[:-2]
 

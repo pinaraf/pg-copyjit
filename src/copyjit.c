@@ -22,6 +22,7 @@ PG_MODULE_MAGIC;
 void _PG_init(void);
 void _PG_fini(void);
 
+#define DEBUG_GEN 1
 
 static const char *opcodeNames[] = {
 	"EEOP_DONE",
@@ -269,6 +270,100 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 	return ((ExprStateEvalFunc) state->evalfunc_private) (state, econtext, isNull);
 }
 
+static void apply_patch (ExprState *state, unsigned char *builtcode, int *offsets, size_t offset, ExprEvalOp opcode, struct ExprEvalStep *op, struct Patch *patch)
+{
+	intptr_t target;
+	//elog(WARNING, "Patch tgt %lu", patch->target);
+	switch (patch->target) {
+		case TARGET_CONST_ISNULL:
+			target = op->d.constval.isnull;
+			break;
+		case TARGET_CONST_VALUE:
+			target = op->d.constval.value;
+			break;
+		case TARGET_RESULTNUM:
+			target = op->d.assign_tmp.resultnum;
+			break;
+		case TARGET_OP:
+			target = (intptr_t) op;
+			break;
+		case TARGET_MakeExpandedObjectReadOnlyInternal:
+			target = (intptr_t) &MakeExpandedObjectReadOnlyInternal;
+			break;
+		case TARGET_ExecEvalScalarArrayOp:
+			target = (intptr_t) &ExecEvalScalarArrayOp;
+			break;
+		case TARGET_slot_getsomeattrs_int:
+			target = (intptr_t) &slot_getsomeattrs_int;
+			break;
+		case TARGET_NEXT_CALL:
+			target = (intptr_t) builtcode + offset + stencils[opcode].code_size;
+			break;
+		case TARGET_JUMP_DONE:
+			target = (intptr_t) builtcode + offsets[op->d.qualexpr.jumpdone];
+			break;
+		case TARGET_RESULTSLOT_VALUES:
+			if (opcode == EEOP_ASSIGN_TMP || opcode == EEOP_ASSIGN_TMP_MAKE_RO)
+				target = (intptr_t) &(state->resultslot->tts_values[op->d.assign_tmp.resultnum]);
+			else if (opcode == EEOP_ASSIGN_SCAN_VAR || opcode == EEOP_ASSIGN_INNER_VAR || opcode == EEOP_ASSIGN_OUTER_VAR)
+				target = (intptr_t) &(state->resultslot->tts_values[op->d.assign_var.resultnum]);
+			else
+				elog(ERROR, "Unsupported target TARGET_RESULTSLOT_VALUES in opcode %s", opcodeNames[opcode]);
+			break;
+		case TARGET_RESULTSLOT_ISNULL:
+			if (opcode == EEOP_ASSIGN_TMP || opcode == EEOP_ASSIGN_TMP_MAKE_RO)
+				target = (intptr_t) &(state->resultslot->tts_isnull[op->d.assign_tmp.resultnum]);
+			else if (opcode == EEOP_ASSIGN_SCAN_VAR || opcode == EEOP_ASSIGN_INNER_VAR || opcode == EEOP_ASSIGN_OUTER_VAR)
+				target = (intptr_t) &(state->resultslot->tts_isnull[op->d.assign_var.resultnum]);
+			else
+				elog(ERROR, "Unsupported target TARGET_RESULTSLOT_ISNULL in opcode %s", opcodeNames[opcode]);
+			break;
+		case TARGET_FUNC_CALL:
+			target = (intptr_t) op->d.func.fn_addr;
+			break;
+		case TARGET_FUNC_NARGS:
+			target = (intptr_t) op->d.func.nargs;
+			break;
+
+		case TARGET_ATTNUM:
+			if (opcode == EEOP_ASSIGN_SCAN_VAR || opcode == EEOP_ASSIGN_INNER_VAR || opcode == EEOP_ASSIGN_OUTER_VAR)
+				target = op->d.assign_var.attnum;
+			else if (opcode == EEOP_SCAN_VAR)
+				target = op->d.var.attnum;
+			else
+				elog(ERROR, "Unsupported target TARGET_ATTNUM in opcode %s", opcodeNames[opcode]);
+			break;
+		default:
+			elog(ERROR, "Unsupported target");
+			break;
+	};
+
+	switch (patch->relkind) {
+		case RELKIND_R_X86_64_64:
+			if (DEBUG_GEN) {
+				elog(WARNING, "Patching %p (%lu) at offset %p with relkind amd64", target, target, patch->offset);
+				elog(WARNING, "builtcode at %p, offset is %p, patch offset is %p", (intptr_t) builtcode, offset, patch->offset);
+			}
+			//targetLocation = (uintptr_t*) builtcode[offset + patch->offset];
+			//*targetLocation = target;
+			/*
+			builtcode[offset + patch->offset + 7] = (target & 0xFF00000000000000) >> 56;
+			builtcode[offset + patch->offset + 6] = (target & 0x00FF000000000000) >> 48;
+			builtcode[offset + patch->offset + 5] = (target & 0x0000FF0000000000) >> 40;
+			builtcode[offset + patch->offset + 4] = (target & 0x000000FF00000000) >> 32;
+			builtcode[offset + patch->offset + 3] = (target & 0x00000000FF000000) >> 24;
+			builtcode[offset + patch->offset + 2] = (target & 0x0000000000FF0000) >> 16;
+			builtcode[offset + patch->offset + 1] = (target & 0x000000000000FF00) >> 8;
+			builtcode[offset + patch->offset + 0] = (target & 0x00000000000000FF) >> 0;
+			*/
+			memcpy(builtcode + offset + patch->offset, &target, 8);
+			break;
+		default:
+			elog(ERROR, "Unsupported relkind");
+			break;
+	}
+}
+
 bool
 copyjit_compile_expr(ExprState *state)
 {
@@ -301,7 +396,8 @@ copyjit_compile_expr(ExprState *state)
 	{
 		struct ExprEvalStep *op = &state->steps[opno];
 		ExprEvalOp opcode = ExecEvalStepOp(state, op);
-		//elog(WARNING, "Need to build an %s - %i opcode at %lu", opcodeNames[opcode], opcode, op);
+		if (DEBUG_GEN)
+			elog(WARNING, "Need to build an %s - %i opcode at %lu", opcodeNames[opcode], opcode, op);
 
 		if (stencils[opcode].code_size == -1) {
 			elog(WARNING, "UNSUPPORTED OPCODE %s", opcodeNames[opcode]);
@@ -322,95 +418,13 @@ copyjit_compile_expr(ExprState *state)
 		{
 			struct ExprEvalStep *op = &state->steps[opno];
 			ExprEvalOp opcode = ExecEvalStepOp(state, op);
-			//elog(WARNING, "Adding stencil for %s, op address is %02x", opcodeNames[opcode], op);
+			if (DEBUG_GEN)
+				elog(WARNING, "Adding stencil for %s, op address is %02p", opcodeNames[opcode], op);
 
 			memcpy(builtcode + offset, stencils[opcode].code, stencils[opcode].code_size);
 			for (int p = 0 ; p < stencils[opcode].patch_size ; p++) {
 				struct Patch *patch = &stencils[opcode].patches[p];
-
-				intptr_t target;
-				//elog(WARNING, "Patch tgt %lu", patch->target);
-				switch (patch->target) {
-					case TARGET_CONST_ISNULL:
-						target = op->d.constval.isnull;
-						break;
-					case TARGET_CONST_VALUE:
-						target = op->d.constval.value;
-						break;
-					case TARGET_RESULTNUM:
-						target = op->d.assign_tmp.resultnum;
-						break;
-					case TARGET_OP:
-						target = (intptr_t) op;
-						break;
-					case TARGET_MakeExpandedObjectReadOnlyInternal:
-						target = (intptr_t) &MakeExpandedObjectReadOnlyInternal;
-						break;
-					case TARGET_slot_getsomeattrs_int:
-						target = (intptr_t) &slot_getsomeattrs_int;
-						break;
-					case TARGET_NEXT_CALL:
-						target = (intptr_t) builtcode + offset + stencils[opcode].code_size;
-						break;
-					case TARGET_JUMP_DONE:
-						target = (intptr_t) builtcode + offsets[op->d.qualexpr.jumpdone];
-						break;
-					case TARGET_RESULTSLOT_VALUES:
-						if (opcode == EEOP_ASSIGN_TMP || opcode == EEOP_ASSIGN_TMP_MAKE_RO)
-							target = (intptr_t) &(state->resultslot->tts_values[op->d.assign_tmp.resultnum]);
-						else if (opcode == EEOP_ASSIGN_SCAN_VAR || opcode == EEOP_ASSIGN_INNER_VAR || opcode == EEOP_ASSIGN_OUTER_VAR)
-							target = (intptr_t) &(state->resultslot->tts_values[op->d.assign_var.resultnum]);
-						else
-							elog(ERROR, "Unsupported target TARGET_RESULTSLOT_VALUES in opcode %s", opcodeNames[opcode]);
-						break;
-					case TARGET_RESULTSLOT_ISNULL:
-						if (opcode == EEOP_ASSIGN_TMP || opcode == EEOP_ASSIGN_TMP_MAKE_RO)
-							target = (intptr_t) &(state->resultslot->tts_isnull[op->d.assign_tmp.resultnum]);
-						else if (opcode == EEOP_ASSIGN_SCAN_VAR || opcode == EEOP_ASSIGN_INNER_VAR || opcode == EEOP_ASSIGN_OUTER_VAR)
-							target = (intptr_t) &(state->resultslot->tts_isnull[op->d.assign_var.resultnum]);
-						else
-							elog(ERROR, "Unsupported target TARGET_RESULTSLOT_ISNULL in opcode %s", opcodeNames[opcode]);
-						break;
-					case TARGET_FUNC_CALL:
-						target = (intptr_t) op->d.func.fn_addr;
-						break;
-					case TARGET_FUNC_NARGS:
-						target = (intptr_t) op->d.func.nargs;
-						break;
-
-					case TARGET_ATTNUM:
-						if (opcode == EEOP_ASSIGN_SCAN_VAR || opcode == EEOP_ASSIGN_INNER_VAR || opcode == EEOP_ASSIGN_OUTER_VAR)
-							target = op->d.assign_var.attnum;
-						else if (opcode == EEOP_SCAN_VAR)
-							target = op->d.var.attnum;
-						else
-							elog(ERROR, "Unsupported target TARGET_ATTNUM in opcode %s", opcodeNames[opcode]);
-						break;
-					default:
-						elog(ERROR, "Unsupported target");
-						break;
-				};
-
-				switch (patch->relkind) {
-					case RELKIND_R_X86_64_64:
-						//elog(WARNING, "Patching %02x (%lu) at offset %lu with relkind amd64", target, target, patch->offset);
-						//elog(WARNING, "builtcode at %lu, offset is %lu, patch offset is %lu", (intptr_t) builtcode, offset, patch->offset);
-						//targetLocation = (uintptr_t*) builtcode[offset + patch->offset];
-						//*targetLocation = target;
-						builtcode[offset + patch->offset + 7] = (target & 0xFF00000000000000) >> 56;
-						builtcode[offset + patch->offset + 6] = (target & 0x00FF000000000000) >> 48;
-						builtcode[offset + patch->offset + 5] = (target & 0x0000FF0000000000) >> 40;
-						builtcode[offset + patch->offset + 4] = (target & 0x000000FF00000000) >> 32;
-						builtcode[offset + patch->offset + 3] = (target & 0x00000000FF000000) >> 24;
-						builtcode[offset + patch->offset + 2] = (target & 0x0000000000FF0000) >> 16;
-						builtcode[offset + patch->offset + 1] = (target & 0x000000000000FF00) >> 8;
-						builtcode[offset + patch->offset + 0] = (target & 0x00000000000000FF) >> 0;
-						//memcpy(builtcode + offset + patch->offset, &target, 8);
-						break;
-					default:
-						elog(ERROR, "Unsupported relkind");
-						break;
-				}
+				apply_patch(state, builtcode, offsets, offset, opcode, op, patch);
 			}
 			offset += stencils[opcode].code_size;
 		}
@@ -419,6 +433,7 @@ copyjit_compile_expr(ExprState *state)
 		//elog(WARNING, "Result of mprotect is %i", mprotect_res);
 		state->evalfunc_private = builtcode;
 		state->evalfunc = builtcode; // When this one starts being usefull, we can bring it back. ExecRunCompiledExpr;
+		state->evalfunc = ExecRunCompiledExpr;
 	}
 	free(offsets);
 
@@ -427,7 +442,8 @@ copyjit_compile_expr(ExprState *state)
 	INSTR_TIME_ACCUM_DIFF(context->base.instr.generation_counter,
 						  endtime, starttime);
 
-	elog(WARNING, "Total JIT duration is %lius", INSTR_TIME_GET_MICROSEC(context->base.instr.generation_counter));
+	if (DEBUG_GEN)
+		elog(WARNING, "Total JIT duration is %lius", INSTR_TIME_GET_MICROSEC(context->base.instr.generation_counter));
 	return canbuild;
 }
 
