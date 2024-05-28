@@ -21,9 +21,11 @@ typedef enum Target {
     TARGET_ATTNUM,
     TARGET_OP,
     TARGET_NEXT_CALL,
+    TARGET_FORCE_NEXT_CALL,
     TARGET_FUNC_CALL,
     TARGET_FUNC_INFO,
     TARGET_FUNC_NARGS,
+    TARGET_FUNC_ARG,
     TARGET_JUMP_DONE,
     TARGET_JUMP_TARGET,
     TARGET_RESULTSLOT_VALUES,
@@ -31,6 +33,10 @@ typedef enum Target {
     TARGET_MakeExpandedObjectReadOnlyInternal,  // TODO : replace this and followings with a TARGET_FUNCTION_CALL and a Patch::function_name ?
     TARGET_slot_getsomeattrs_int,
     TARGET_ExecEvalScalarArrayOp,               // TODO : used as is, should be reimplemented but I wanted to show it can be quick this way
+    TARGET_ExecEvalSysVar,                      // can it stay as is ?
+    TARGET_ExecEvalSQLValueFunction,            // should be fine too
+    TARGET_ExecEvalParamExec,                   // should be fine too
+    TARGET_ExecEvalParamExtern,                 // should be fine too
 } Target;
 
 typedef struct Patch {
@@ -135,10 +141,18 @@ class Stencil(object):
             print("stencils[%s].code_size = %s; stencils[%s].code = %s__code;" % (self.name, len(self.code), self.name, self.name))
             print("stencils[%s].patch_size = %s; stencils[%s].patches = %s__patches;" % (self.name, len(self.patches), self.name, self.name))
 
+class ExtraStencil(Stencil):
+    def dump_initializer(self):
+        if len(self.patches) == 0:
+            print("struct Stencil %s = { .code_size = %s, .code = %s__code, .patch_size = 0; };" % (self.name, len(self.code), self.name))
+        else:
+            print("struct Stencil %s = { .code_size = %s, .code = %s__code, .patch_size = %s, .patches = %s__patches };" % (self.name, len(self.code), self.name, len(self.patches), self.name))
+
 def generate_stencil(filename):
     objdump = json.load(open(filename, "r"))
     stencils_o = objdump[0]
     stencils = []
+    extra_stencils = []
     for section in stencils_o["Sections"]:
         section = section["Section"]
         if section["Name"]["Value"] == ".text":
@@ -147,10 +161,14 @@ def generate_stencil(filename):
                 symbol = symbol["Symbol"]
                 symbolName = symbol["Name"]["Value"]
                 if symbolName.startswith("stencil_"):
-                    # FUN
                     offset = symbol["Value"]
                     end = offset + symbol["Size"]
                     stencils.append(Stencil(symbolName[8:], data[offset:end], offset, end))
+                elif symbolName.startswith("extra_"):
+                    offset = symbol["Value"]
+                    end = offset + symbol["Size"]
+                    extra_stencils.append(ExtraStencil(symbolName, data[offset:end], offset, end))
+
 
         if section["Name"]["Value"] == ".rela.text":
             data = section["SectionData"]["Bytes"]
@@ -162,13 +180,13 @@ def generate_stencil(filename):
                 patch = Patch(target, relkind, code_offset)
 
                 # match the patch to a stencil
-                for stencil in stencils:
+                for stencil in stencils + extra_stencils:
                     if stencil.start <= patch.offset and stencil.end > patch.offset:
                         stencil.add_patch(patch)
                         break
 
     print(prefix)
-    for stencil in stencils:
+    for stencil in stencils + extra_stencils:
         stencil.strip_code()
         stencil.dump_code()
         stencil.dump_patches()
@@ -177,6 +195,8 @@ def generate_stencil(filename):
     for stencil in stencils:
         stencil.dump_initializer()
     print(postfix_initializer)
+    for extra in extra_stencils:
+        extra.dump_initializer()
 
 if __name__ == "__main__":
     # args machin

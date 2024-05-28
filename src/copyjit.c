@@ -15,6 +15,9 @@
 
 #include <sys/mman.h>
 
+void initialize_stencils();
+void copyjit_reset_after_error(void);
+
 #include "built-stencils.h"
 
 PG_MODULE_MAGIC;
@@ -23,6 +26,7 @@ void _PG_init(void);
 void _PG_fini(void);
 
 #define DEBUG_GEN 1
+#define USE_EXTRA 0
 
 static const char *opcodeNames[] = {
 	"EEOP_DONE",
@@ -270,7 +274,7 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 	return ((ExprStateEvalFunc) state->evalfunc_private) (state, econtext, isNull);
 }
 
-static void apply_patch (ExprState *state, unsigned char *builtcode, int *offsets, size_t offset, ExprEvalOp opcode, struct ExprEvalStep *op, struct Patch *patch)
+static intptr_t get_patch_target(ExprState *state, unsigned char *builtcode, int *offsets, size_t offset, ExprEvalOp opcode, struct ExprEvalStep *op, const struct Patch *patch)
 {
 	intptr_t target;
 	//elog(WARNING, "Patch tgt %lu", patch->target);
@@ -293,9 +297,22 @@ static void apply_patch (ExprState *state, unsigned char *builtcode, int *offset
 		case TARGET_ExecEvalScalarArrayOp:
 			target = (intptr_t) &ExecEvalScalarArrayOp;
 			break;
+		case TARGET_ExecEvalSysVar:
+			target = (intptr_t) &ExecEvalSysVar;
+			break;
+		case TARGET_ExecEvalSQLValueFunction:
+			target = (intptr_t) &ExecEvalSQLValueFunction;
+			break;
+		case TARGET_ExecEvalParamExec:
+			target = (intptr_t) &ExecEvalParamExec;
+			break;
+		case TARGET_ExecEvalParamExtern:
+			target = (intptr_t) &ExecEvalParamExtern;
+			break;
 		case TARGET_slot_getsomeattrs_int:
 			target = (intptr_t) &slot_getsomeattrs_int;
 			break;
+		case TARGET_FORCE_NEXT_CALL:
 		case TARGET_NEXT_CALL:
 			target = (intptr_t) builtcode + offset + stencils[opcode].code_size;
 			break;
@@ -324,7 +341,6 @@ static void apply_patch (ExprState *state, unsigned char *builtcode, int *offset
 		case TARGET_FUNC_NARGS:
 			target = (intptr_t) op->d.func.nargs;
 			break;
-
 		case TARGET_ATTNUM:
 			if (opcode == EEOP_ASSIGN_SCAN_VAR || opcode == EEOP_ASSIGN_INNER_VAR || opcode == EEOP_ASSIGN_OUTER_VAR)
 				target = op->d.assign_var.attnum;
@@ -337,12 +353,16 @@ static void apply_patch (ExprState *state, unsigned char *builtcode, int *offset
 			elog(ERROR, "Unsupported target");
 			break;
 	};
+	return target;
+}
 
+static void apply_patch_with_target (unsigned char *builtcode, size_t offset, intptr_t target, const struct Patch *patch)
+{
 	switch (patch->relkind) {
 		case RELKIND_R_X86_64_64:
 			if (DEBUG_GEN) {
-				elog(WARNING, "Patching %p (%lu) at offset %p with relkind amd64", target, target, patch->offset);
-				elog(WARNING, "builtcode at %p, offset is %p, patch offset is %p", (intptr_t) builtcode, offset, patch->offset);
+				elog(WARNING, "Patching %p at offset %02lu with relkind amd64", (void*) target, patch->offset);
+				elog(WARNING, "builtcode at %p, offset is %02lu, patch offset is %02lu", (void *) builtcode, offset, patch->offset);
 			}
 			//targetLocation = (uintptr_t*) builtcode[offset + patch->offset];
 			//*targetLocation = target;
@@ -364,6 +384,13 @@ static void apply_patch (ExprState *state, unsigned char *builtcode, int *offset
 	}
 }
 
+static void apply_patch (ExprState *state, unsigned char *builtcode, int *offsets, size_t offset, ExprEvalOp opcode, struct ExprEvalStep *op, const struct Patch *patch)
+{
+	intptr_t target = get_patch_target(state, builtcode, offsets, offset, opcode, op, patch);
+
+	apply_patch_with_target(builtcode, offset, target, patch);
+}
+
 bool
 copyjit_compile_expr(ExprState *state)
 {
@@ -375,7 +402,7 @@ copyjit_compile_expr(ExprState *state)
 	unsigned char *builtcode;
 	size_t offset = 0;
 	int mprotect_res;
-	uintptr_t *targetLocation;
+	int *offsets;
 
 	PlanState  *parent = state->parent;
 	Assert(parent);
@@ -391,19 +418,24 @@ copyjit_compile_expr(ExprState *state)
 	INSTR_TIME_SET_CURRENT(starttime);
 
 	// This offset array is usefull later when jumps appear...
-	int *offsets = malloc(sizeof(int) * state->steps_len);
+	offsets = malloc(sizeof(int) * state->steps_len);
 	for (int opno = 0; opno < state->steps_len; opno++)
 	{
 		struct ExprEvalStep *op = &state->steps[opno];
 		ExprEvalOp opcode = ExecEvalStepOp(state, op);
 		if (DEBUG_GEN)
-			elog(WARNING, "Need to build an %s - %i opcode at %lu", opcodeNames[opcode], opcode, op);
+			elog(WARNING, "Need to build an %s - %i opcode at %p", opcodeNames[opcode], opcode, op);
 
+		offsets[opno] = neededsize;
+#if USE_EXTRA
+		if (opcode == EEOP_FUNCEXPR_STRICT) {
+			neededsize += stencils[EEOP_FUNCEXPR].code_size + op->d.func.nargs * extra_EEOP_FUNCEXPR_STRICT_CHECKER.code_size;
+		} else
+#endif
 		if (stencils[opcode].code_size == -1) {
 			elog(WARNING, "UNSUPPORTED OPCODE %s", opcodeNames[opcode]);
 			canbuild = false;
 		} else {
-			offsets[opno] = neededsize;
 			neededsize += stencils[opcode].code_size;
 		}
 	}
@@ -419,20 +451,44 @@ copyjit_compile_expr(ExprState *state)
 			struct ExprEvalStep *op = &state->steps[opno];
 			ExprEvalOp opcode = ExecEvalStepOp(state, op);
 			if (DEBUG_GEN)
-				elog(WARNING, "Adding stencil for %s, op address is %02p", opcodeNames[opcode], op);
+				elog(WARNING, "Adding stencil for %s, op address is %p", opcodeNames[opcode], op);
+#if USE_EXTRA
+			if (opcode == EEOP_FUNCEXPR_STRICT) {
+				if (DEBUG_GEN)
+					elog(WARNING, "Adding %i extra_EEOP_FUNCEXPR_STRICT_CHECKER stencils", op->d.func.nargs);
+				for (int narg = 0 ; narg < op->d.func.nargs ; narg++) {
+					memcpy(builtcode + offset, extra_EEOP_FUNCEXPR_STRICT_CHECKER.code, extra_EEOP_FUNCEXPR_STRICT_CHECKER.code_size);
+					for (int p = 0 ; p < extra_EEOP_FUNCEXPR_STRICT_CHECKER.patch_size ; p++) {
+						const struct Patch *patch = &extra_EEOP_FUNCEXPR_STRICT_CHECKER.patches[p];
+						if (patch->target == TARGET_FUNC_ARG) {
+							NullableDatum *func_arg = &(op->d.func.fcinfo_data->args[narg]);
+							apply_patch_with_target(builtcode, offset, (intptr_t) func_arg, patch);
+						} else {
+							apply_patch(state, builtcode, offsets, offset, opcode, op, patch);
+						}
+					}
+					offset += extra_EEOP_FUNCEXPR_STRICT_CHECKER.code_size;
+				}
+				// Now we can land back on normal func call
+				opcode = EEOP_FUNCEXPR;
+
+				if (DEBUG_GEN)
+					elog(WARNING, "Converted back to EEOP_FUNCEXPR for normal code now");
+			}
+#endif
 
 			memcpy(builtcode + offset, stencils[opcode].code, stencils[opcode].code_size);
 			for (int p = 0 ; p < stencils[opcode].patch_size ; p++) {
-				struct Patch *patch = &stencils[opcode].patches[p];
+				const struct Patch *patch = &stencils[opcode].patches[p];
 				apply_patch(state, builtcode, offsets, offset, opcode, op, patch);
 			}
 			offset += stencils[opcode].code_size;
 		}
 		mprotect_res = mprotect(builtcode, neededsize, PROT_EXEC);
-
-		//elog(WARNING, "Result of mprotect is %i", mprotect_res);
+		if (DEBUG_GEN)
+			elog(WARNING, "Result of mprotect is %i", mprotect_res);
 		state->evalfunc_private = builtcode;
-		state->evalfunc = builtcode; // When this one starts being usefull, we can bring it back. ExecRunCompiledExpr;
+		state->evalfunc = (ExprStateEvalFunc) builtcode; // When this one starts being usefull, we can bring it back. ExecRunCompiledExpr;
 		state->evalfunc = ExecRunCompiledExpr;
 	}
 	free(offsets);

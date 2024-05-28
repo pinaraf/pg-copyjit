@@ -26,10 +26,11 @@ extern int RESULTNUM;
 extern int ATTNUM;
 extern Datum RESULTSLOT_VALUES;
 extern bool RESULTSLOT_ISNULL;
-extern int FUNC_NARGS;
+extern NullableDatum FUNC_ARG;
 
 extern ExprEvalStep op;
 
+extern Datum FORCE_NEXT_CALL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
 extern Datum NEXT_CALL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
 extern Datum JUMP_DONE   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
 extern Datum FUNC_CALL   (FunctionCallInfo fcinfo);
@@ -88,7 +89,20 @@ Datum stencil_EEOP_FUNCEXPR (struct ExprState *expression, struct ExprContext *e
 }
 
 // Idée : remplacer par un stencil de vérification de null, faire un unroll...
+#if 0
+Datum extra_EEOP_FUNCEXPR_STRICT_CHECKER (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	if (FUNC_ARG.isnull)
+	{
+		*op.resnull = true;
 
+		__attribute__((musttail))
+		return FORCE_NEXT_CALL(expression, econtext, isNull);
+	}
+    __attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+#else
 Datum stencil_EEOP_FUNCEXPR_STRICT (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
@@ -117,7 +131,7 @@ strictfail:
     __attribute__((musttail))
     return NEXT_CALL(expression, econtext, isNull);
 }
-
+#endif
 Datum stencil_EEOP_QUAL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	/* simplified version of BOOL_AND_STEP for use by ExecQual() */
@@ -143,6 +157,20 @@ Datum stencil_EEOP_QUAL (struct ExprState *expression, struct ExprContext *econt
     return NEXT_CALL(expression, econtext, isNull);
 }
 
+Datum stencil_EEOP_SQLVALUEFUNCTION (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	ExecEvalSQLValueFunction(expression, &op);
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum stencil_EEOP_SCAN_SYSVAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	ExecEvalSysVar(expression, &op, econtext, econtext->ecxt_scantuple);
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
 Datum stencil_EEOP_SCAN_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	TupleTableSlot *scanslot = econtext->ecxt_scantuple;
@@ -161,6 +189,52 @@ Datum stencil_EEOP_SCAN_FETCHSOME (struct ExprState *expression, struct ExprCont
 
 	// Note : this is were deforming will need to happen
 	slot_getsomeattrs(scanslot, op.d.fetch.last_var);
+
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum stencil_EEOP_INNER_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	TupleTableSlot *innerslot = econtext->ecxt_innertuple;
+
+	/* See EEOP_INNER_VAR comments */
+	int attnum = op.d.var.attnum;
+	*op.resvalue = innerslot->tts_values[attnum];
+	*op.resnull = innerslot->tts_isnull[attnum];
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum stencil_EEOP_INNER_FETCHSOME (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	TupleTableSlot * innerslot = econtext->ecxt_innertuple;
+
+	// Note : this is were deforming will need to happen
+	slot_getsomeattrs(innerslot, op.d.fetch.last_var);
+
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum stencil_EEOP_OUTER_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	TupleTableSlot *outerslot = econtext->ecxt_outertuple;
+
+	/* See EEOP_INNER_VAR comments */
+	int attnum = op.d.var.attnum;
+	*op.resvalue = outerslot->tts_values[attnum];
+	*op.resnull = outerslot->tts_isnull[attnum];
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum stencil_EEOP_OUTER_FETCHSOME (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	TupleTableSlot * outerslot = econtext->ecxt_outertuple;
+
+	// Note : this is were deforming will need to happen
+	slot_getsomeattrs(outerslot, op.d.fetch.last_var);
 
 	__attribute__((musttail))
     return NEXT_CALL(expression, econtext, isNull);
@@ -262,3 +336,96 @@ Datum stencil_EEOP_JUMP (struct ExprState *expression, struct ExprContext *econt
     return JUMP_DONE(expression, econtext, isNull);
 }
 
+Datum stencil_EEOP_DISTINCT (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
+
+	/* check function arguments for NULLness */
+	if (fcinfo->args[0].isnull && fcinfo->args[1].isnull)
+	{
+		/* Both NULL? Then is not distinct... */
+		*op.resvalue = BoolGetDatum(false);
+		*op.resnull = false;
+	}
+	else if (fcinfo->args[0].isnull || fcinfo->args[1].isnull)
+	{
+		/* Only one is NULL? Then is distinct... */
+		*op.resvalue = BoolGetDatum(true);
+		*op.resnull = false;
+	}
+	else
+	{
+		/* Neither null, so apply the equality function */
+		Datum		eqresult;
+
+		fcinfo->isnull = false;
+		eqresult = op.d.func.fn_addr(fcinfo);
+		/* Must invert result of "="; safe to do even if null */
+		*op.resvalue = BoolGetDatum(!DatumGetBool(eqresult));
+		*op.resnull = fcinfo->isnull;
+	}
+
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum stencil_EEOP_NOT_DISTINCT (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
+
+	/* check function arguments for NULLness */
+	if (fcinfo->args[0].isnull && fcinfo->args[1].isnull)
+	{
+		/* Both NULL? Then is not distinct... */
+		*op.resvalue = BoolGetDatum(true);
+		*op.resnull = false;
+	}
+	else if (fcinfo->args[0].isnull || fcinfo->args[1].isnull)
+	{
+		/* Only one is NULL? Then is distinct... */
+		*op.resvalue = BoolGetDatum(false);
+		*op.resnull = false;
+	}
+	else
+	{
+		/* Neither null, so apply the equality function */
+		Datum		eqresult;
+
+		fcinfo->isnull = false;
+		eqresult = op.d.func.fn_addr(fcinfo);
+		*op.resvalue = eqresult;
+		*op.resnull = fcinfo->isnull;
+	}
+
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
+/* TODO pgbench
+WARNING:  UNSUPPORTED OPCODE EEOP_AGG_PLAIN_TRANS_STRICT_BYVAL
+WARNING:  UNSUPPORTED OPCODE EEOP_AGG_STRICT_INPUT_CHECK_ARGS
+*/
+Datum stencil_EEOP_AGGREF (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	int			aggno = op.d.aggref.aggno;
+
+	*op.resvalue = econtext->ecxt_aggvalues[aggno];
+	*op.resnull = econtext->ecxt_aggnulls[aggno];
+
+	__attribute__((musttail))
+	return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum stencil_EEOP_PARAM_EXEC (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	ExecEvalParamExec(expression, &op, econtext);
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum stencil_EEOP_PARAM_EXTERN (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	ExecEvalParamExtern(expression, &op, econtext);
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
