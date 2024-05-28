@@ -14,10 +14,11 @@ HERE BE DRAGONS
 Get my gist?
 
 
-Licensed under PostgreSQL license (because we reuse some PG code directly), but not done properly in repository yet...
+Licensed under PostgreSQL license (because I reuse some PG code directly), but not done properly in repository yet...
 
-I won't tell you how to build, that's not fun, and I don't want too many people to play with this experiment yet.
 
+How to build? Like any extension! make
+How to use it? `jit_provider='copyjit'` in your postgresql.conf (after make install, of course)
 
 EXPERIMENTAL!
 

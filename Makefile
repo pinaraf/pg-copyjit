@@ -35,11 +35,12 @@ dist-bzip2: dist
 	cd sdist && tar cfj ../sdist/$(NAME)-$(VERSION).tar.bz2 $(NAME)-$(VERSION)
 
 src/stencils.o: src/stencils.c
-	clang -Wall -Wpointer-arith -Wdeclaration-after-statement -Werror=vla -Wendif-labels -Wmissing-format-attribute -Wimplicit-fallthrough=3 -Wcast-function-type -Wshadow=compatible-local -Wformat-security -fno-strict-aliasing -fwrapv -fexcess-precision=standard -Wno-format-truncation -Wno-stringop-truncation -O3 -fno-asynchronous-unwind-tables -fno-builtin -fno-jump-tables -fno-pic -fno-stack-protector -mcmodel=large $(CPPFLAGS) -c -o src/stencils2.o src/stencils.c
+	clang -Wall -Wpointer-arith -Wdeclaration-after-statement -Werror=vla -Wendif-labels -Wmissing-format-attribute -Wimplicit-fallthrough=3 -Wcast-function-type -Wshadow=compatible-local -Wformat-security -fno-strict-aliasing -fwrapv -fexcess-precision=standard -Wno-format-truncation -Wno-stringop-truncation -O3 -fno-asynchronous-unwind-tables -fno-builtin -fno-jump-tables -fno-pic -fno-stack-protector -mcmodel=large $(CPPFLAGS) -c -o src/stencils.o src/stencils.c
 
-src/stencils.json: src/stencils2.o
-	llvm-readobj --elf-output-style=JSON --pretty-print --expand-relocs --section-data --section-relocations --section-symbols --sections src/stencils2.o > src/stencils2.json
+src/stencils.json: src/stencils.o
+	llvm-readobj --elf-output-style=JSON --pretty-print --expand-relocs --section-data --section-relocations --section-symbols --sections src/stencils.o > src/stencils.json
 
-src/built-stencils.h: src/stencils2.json src/stencil-builder.py
-	python3 src/stencil-builder.py src/stencils2.json > src/built-stencils2.h
+src/built-stencils.h: src/stencils.json src/stencil-builder.py
+	python3 src/stencil-builder.py src/stencils.json > src/built-stencils.h
 
+src/copyjit.o: src/built-stencils.h
