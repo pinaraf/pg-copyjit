@@ -34,7 +34,12 @@ dist-bzip2: dist
 	-mkdir sdist
 	cd sdist && tar cfj ../sdist/$(NAME)-$(VERSION).tar.bz2 $(NAME)-$(VERSION)
 
-#stencils_jit.h: src/stencils.c
-#	clang -Wall -Wmissing-prototypes -Wpointer-arith -Wdeclaration-after-statement -Werror=vla -Wendif-labels -Wmissing-format-attribute -Wimplicit-fallthrough=3 -Wcast-function-type -Wshadow=compatible-local -Wformat-security -fno-strict-aliasing -fwrapv -fexcess-precision=standard -Wno-format-truncation -Wno-stringop-truncation -O3 -fno-asynchronous-unwind-tables -fno-builtin -fno-jump-tables -fno-pic -fno-stack-protector -mcmodel=large -I. -I./ -I/usr/include/postgresql/16/server -I/usr/include/postgresql/internal  -Wdate-time -D_FORTIFY_SOURCE=2 -D_GNU_SOURCE -I/usr/include/libxml2   -c -o src/stencils.o src/stencils.c
-#	python3 generate-stencils.py
+src/stencils.o: src/stencils.c
+	clang -Wall -Wpointer-arith -Wdeclaration-after-statement -Werror=vla -Wendif-labels -Wmissing-format-attribute -Wimplicit-fallthrough=3 -Wcast-function-type -Wshadow=compatible-local -Wformat-security -fno-strict-aliasing -fwrapv -fexcess-precision=standard -Wno-format-truncation -Wno-stringop-truncation -O3 -fno-asynchronous-unwind-tables -fno-builtin -fno-jump-tables -fno-pic -fno-stack-protector -mcmodel=large $(CPPFLAGS) -c -o src/stencils2.o src/stencils.c
+
+src/stencils.json: src/stencils2.o
+	llvm-readobj --elf-output-style=JSON --pretty-print --expand-relocs --section-data --section-relocations --section-symbols --sections src/stencils2.o > src/stencils2.json
+
+src/built-stencils.h: src/stencils2.json src/stencil-builder.py
+	python3 src/stencil-builder.py src/stencils2.json > src/built-stencils2.h
 
