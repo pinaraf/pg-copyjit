@@ -26,7 +26,7 @@ PG_MODULE_MAGIC;
 void _PG_init(void);
 void _PG_fini(void);
 
-#define DEBUG_GEN 1
+#define DEBUG_GEN 0
 #define USE_EXTRA 1
 
 static const char *opcodeNames[] = {
@@ -319,6 +319,14 @@ static intptr_t get_patch_target(ExprState *state, unsigned char *builtcode, int
 		case TARGET_JUMP_DONE:
 			target = (intptr_t) builtcode + offsets[op->d.qualexpr.jumpdone];
 			break;
+		case TARGET_JUMP_NULL:
+			if (op->opcode == EEOP_AGG_PLAIN_PERGROUP_NULLCHECK)
+				target = (intptr_t) builtcode + offsets[op->d.agg_plain_pergroup_nullcheck.jumpnull];
+			else if (op->opcode == EEOP_AGG_STRICT_INPUT_CHECK_ARGS)
+				target = (intptr_t) builtcode + offsets[op->d.agg_strict_input_check.jumpnull];
+			else
+				elog(ERROR, "Unsupported target TARGET_JUMP_NULL in opcode %s", opcodeNames[op->opcode]);
+			break;
 		case TARGET_RESULTSLOT_VALUES:
 			if (op->opcode == EEOP_ASSIGN_TMP || op->opcode == EEOP_ASSIGN_TMP_MAKE_RO)
 				target = (intptr_t) &(state->resultslot->tts_values[op->d.assign_tmp.resultnum]);
@@ -348,6 +356,9 @@ static intptr_t get_patch_target(ExprState *state, unsigned char *builtcode, int
 				target = op->d.var.attnum;
 			else
 				elog(ERROR, "Unsupported target TARGET_ATTNUM in opcode %s", opcodeNames[op->opcode]);
+			break;
+		case TARGET_CurrentMemoryContext:
+			target = (intptr_t) &CurrentMemoryContext;
 			break;
 		default:
 			elog(ERROR, "Unsupported target");

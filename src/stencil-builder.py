@@ -27,7 +27,7 @@ typedef enum Target {
     TARGET_FUNC_NARGS,
     TARGET_FUNC_ARG,
     TARGET_JUMP_DONE,
-    TARGET_JUMP_TARGET,
+    TARGET_JUMP_NULL,
     TARGET_RESULTSLOT_VALUES,
     TARGET_RESULTSLOT_ISNULL,
     TARGET_MakeExpandedObjectReadOnlyInternal,  // TODO : replace this and followings with a TARGET_FUNCTION_CALL and a Patch::function_name ?
@@ -37,6 +37,7 @@ typedef enum Target {
     TARGET_ExecEvalSQLValueFunction,            // should be fine too
     TARGET_ExecEvalParamExec,                   // should be fine too
     TARGET_ExecEvalParamExtern,                 // should be fine too
+    TARGET_CurrentMemoryContext,
 } Target;
 
 typedef struct Patch {
@@ -105,7 +106,8 @@ class Stencil(object):
         if next_call_patch is None:
             return
 
-        assert(next_call_patch == self.patches[-1])
+        if next_call_patch != self.patches[-1]:
+            return
 
         # XXX TODO : this is not portable at all yet.
         # ok, so we must identify that pattern at patch.offset-2 : movabs $0x0,%rax ; jmp *%rax
