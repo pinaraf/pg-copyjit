@@ -119,7 +119,7 @@ Datum extra_EEOP_FUNCEXPR_STRICT_int4lt (struct ExprState *expression, struct Ex
 }
 
 // Idée : remplacer par un stencil de vérification de null, faire un unroll...
-#if 0
+#if 1
 Datum extra_EEOP_FUNCEXPR_STRICT_CHECKER (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	if (FUNC_ARG.isnull)
