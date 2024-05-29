@@ -100,7 +100,6 @@ class Stencil(object):
         for patch in self.patches:
             used_targets.add(patch.target)
             if patch.target == "NEXT_CALL":
-                assert(next_call_patch is None)
                 next_call_patch = patch
 
         if next_call_patch is None:

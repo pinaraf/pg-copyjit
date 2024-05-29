@@ -12,6 +12,7 @@
 #include "utils/memutils.h"
 #include "utils/resowner_private.h"
 #include "utils/expandeddatum.h"
+#include "utils/fmgrprotos.h"
 
 #include <sys/mman.h>
 
@@ -277,7 +278,6 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 static intptr_t get_patch_target(ExprState *state, unsigned char *builtcode, int *offsets, size_t offset, ExprEvalOp opcode, struct ExprEvalStep *op, const struct Patch *patch)
 {
 	intptr_t target;
-	//elog(WARNING, "Patch tgt %lu", patch->target);
 	switch (patch->target) {
 		case TARGET_CONST_ISNULL:
 			target = op->d.constval.isnull;
@@ -391,6 +391,16 @@ static void apply_patch (ExprState *state, unsigned char *builtcode, int *offset
 	apply_patch_with_target(builtcode, offset, target, patch);
 }
 
+static size_t apply_stencil (struct Stencil *stencil, ExprState *state, unsigned char *builtcode, int *offsets, size_t offset, ExprEvalOp opcode, struct ExprEvalStep *op)
+{
+	memcpy(builtcode + offset, stencil->code, stencil->code_size);
+	for (int p = 0 ; p < stencil->patch_size ; p++) {
+		const struct Patch *patch = &stencil->patches[p];
+		apply_patch(state, builtcode, offsets, offset, opcode, op, patch);
+	}
+	return stencil->code_size;
+}
+
 bool
 copyjit_compile_expr(ExprState *state)
 {
@@ -432,7 +442,13 @@ copyjit_compile_expr(ExprState *state)
 			neededsize += stencils[EEOP_FUNCEXPR].code_size + op->d.func.nargs * extra_EEOP_FUNCEXPR_STRICT_CHECKER.code_size;
 		} else
 #endif
-		if (stencils[opcode].code_size == -1) {
+		if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4eq) {
+			elog(WARNING, "Found a call to int4eq, inlining the hard way!");
+			neededsize += extra_EEOP_FUNCEXPR_STRICT_int4eq.code_size;
+		} else if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4lt) {
+			elog(WARNING, "Found a call to int4lt, inlining the hard way!");
+			neededsize += extra_EEOP_FUNCEXPR_STRICT_int4lt.code_size;
+		} else if (stencils[opcode].code_size == -1) {
 			elog(WARNING, "UNSUPPORTED OPCODE %s", opcodeNames[opcode]);
 			canbuild = false;
 		} else {
@@ -477,12 +493,13 @@ copyjit_compile_expr(ExprState *state)
 			}
 #endif
 
-			memcpy(builtcode + offset, stencils[opcode].code, stencils[opcode].code_size);
-			for (int p = 0 ; p < stencils[opcode].patch_size ; p++) {
-				const struct Patch *patch = &stencils[opcode].patches[p];
-				apply_patch(state, builtcode, offsets, offset, opcode, op, patch);
+			if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4eq) {
+				offset += apply_stencil(&extra_EEOP_FUNCEXPR_STRICT_int4eq, state, builtcode, offsets, offset, opcode, op);
+			} else if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4lt) {
+				offset += apply_stencil(&extra_EEOP_FUNCEXPR_STRICT_int4lt, state, builtcode, offsets, offset, opcode, op);
+			} else {
+				offset += apply_stencil(&stencils[opcode], state, builtcode, offsets, offset, opcode, op);
 			}
-			offset += stencils[opcode].code_size;
 		}
 		mprotect_res = mprotect(builtcode, neededsize, PROT_EXEC);
 		if (DEBUG_GEN)

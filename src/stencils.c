@@ -88,6 +88,36 @@ Datum stencil_EEOP_FUNCEXPR (struct ExprState *expression, struct ExprContext *e
     return NEXT_CALL(expression, econtext, isNull);
 }
 
+Datum extra_EEOP_FUNCEXPR_STRICT_int4eq (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
+	NullableDatum *args = fcinfo->args;
+
+	if (args[0].isnull || args[1].isnull) {
+		*op.resnull = true;
+	} else {
+		*op.resvalue = (DatumGetInt32(args[0].value) == DatumGetInt32(args[1].value));
+		*op.resnull = false;
+	}
+	__attribute__((musttail))
+	return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum extra_EEOP_FUNCEXPR_STRICT_int4lt (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
+	NullableDatum *args = fcinfo->args;
+
+	if (args[0].isnull || args[1].isnull) {
+		*op.resnull = true;
+	} else {
+		*op.resvalue = (DatumGetInt32(args[0].value) < DatumGetInt32(args[1].value));
+		*op.resnull = false;
+	}
+	__attribute__((musttail))
+	return NEXT_CALL(expression, econtext, isNull);
+}
+
 // Idée : remplacer par un stencil de vérification de null, faire un unroll...
 #if 0
 Datum extra_EEOP_FUNCEXPR_STRICT_CHECKER (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
@@ -401,6 +431,20 @@ Datum stencil_EEOP_NOT_DISTINCT (struct ExprState *expression, struct ExprContex
     return NEXT_CALL(expression, econtext, isNull);
 }
 
+Datum stencil_EEOP_PARAM_EXEC (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	ExecEvalParamExec(expression, &op, econtext);
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
+Datum stencil_EEOP_PARAM_EXTERN (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+	ExecEvalParamExtern(expression, &op, econtext);
+	__attribute__((musttail))
+    return NEXT_CALL(expression, econtext, isNull);
+}
+
 /* TODO pgbench
 WARNING:  UNSUPPORTED OPCODE EEOP_AGG_PLAIN_TRANS_STRICT_BYVAL
 WARNING:  UNSUPPORTED OPCODE EEOP_AGG_STRICT_INPUT_CHECK_ARGS
@@ -414,18 +458,4 @@ Datum stencil_EEOP_AGGREF (struct ExprState *expression, struct ExprContext *eco
 
 	__attribute__((musttail))
 	return NEXT_CALL(expression, econtext, isNull);
-}
-
-Datum stencil_EEOP_PARAM_EXEC (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
-{
-	ExecEvalParamExec(expression, &op, econtext);
-	__attribute__((musttail))
-    return NEXT_CALL(expression, econtext, isNull);
-}
-
-Datum stencil_EEOP_PARAM_EXTERN (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
-{
-	ExecEvalParamExtern(expression, &op, econtext);
-	__attribute__((musttail))
-    return NEXT_CALL(expression, econtext, isNull);
 }
