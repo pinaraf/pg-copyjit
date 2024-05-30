@@ -12,6 +12,7 @@ prefix = """
 
 typedef enum Relkind {
     RELKIND_R_X86_64_64,
+    RELKIND_REJUMP,
 } Relkind;
 
 typedef enum Target {
@@ -94,7 +95,7 @@ class Stencil(object):
         self.patches.append(patch)
         patch.offset -= self.start
 
-    def strip_code(self):
+    def _strip_final_next_call(self):
         # first, find the NEXT_CALL patch
         next_call_patch = None
         used_targets = set()
@@ -122,6 +123,24 @@ class Stencil(object):
         elif False and self.code[-2:] == [0xff, 0xe0] and not "TARGET_JUMP_DONE" in used_targets:
             # last opcode is jmp *rax, remove it because we should never jump somewhere else
             self.code = self.code[:-2]
+
+    def strip_code(self):
+        # first, try to get rid of final next_call
+        self._strip_final_next_call()
+        # now, try to find out a movabs XX, %rax ; jmp *%rax sequence
+        mov_and_jmp = b"\x48\xb8\x00\x00\x00\x00\x00\x00\x00\x00\xff\xe0"
+        patch_offset = 2
+        code = bytes(self.code)
+        while mov_and_jmp in code:
+            idx = code.index(mov_and_jmp)
+            # replace it with nops
+            code = code[:idx] + b"\x90" * len(mov_and_jmp) + code[idx+len(mov_and_jmp):]
+            # move the corresponding patch to the beginning of this beautiful hole
+            for patch in self.patches:
+                if patch.offset == idx+patch_offset:
+                    patch.offset = idx
+                    patch.kind = 'REJUMP'
+        self.code = [x for x in code]
 
     def dump_code(self):
         print("const unsigned char %s__code[%s] = {%s};" % (self.name, len(self.code), ", ".join([hex(x) for x in self.code])))

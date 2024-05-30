@@ -367,6 +367,21 @@ static intptr_t get_patch_target(ExprState *state, unsigned char *builtcode, int
 	return target;
 }
 
+static void apply_jump(unsigned char *builtcode, size_t offset, intptr_t target, const struct Patch *patch)
+{
+	// A LOT OF FUN !
+	// target is an adress we need to jump to. we are playing with code with IP = offset+patch->offset
+	if (DEBUG_GEN)
+		elog(WARNING, "Asked to jump to %p, we are patching at %p", target, (intptr_t) builtcode + offset + patch->offset);
+	int64_t relative_jump = target - ((intptr_t) builtcode + offset + patch->offset);
+	// Note : one could build short jumps, but not sure it's worth the effort
+	// I assert we have no insane jump, but... meh, should implement a check
+	relative_jump -= 5;	// remove size of jump from offset
+	int32_t near_jump = (int32_t) relative_jump;
+	builtcode[offset + patch->offset] = 0xE9;
+	memcpy(builtcode + offset + patch->offset + 1, &near_jump, 4);
+}
+
 static void apply_patch_with_target (unsigned char *builtcode, size_t offset, intptr_t target, const struct Patch *patch)
 {
 	switch (patch->relkind) {
@@ -388,6 +403,9 @@ static void apply_patch_with_target (unsigned char *builtcode, size_t offset, in
 			builtcode[offset + patch->offset + 0] = (target & 0x00000000000000FF) >> 0;
 			*/
 			memcpy(builtcode + offset + patch->offset, &target, 8);
+			break;
+		case RELKIND_REJUMP:
+			apply_jump(builtcode, offset, target, patch);
 			break;
 		default:
 			elog(ERROR, "Unsupported relkind");
