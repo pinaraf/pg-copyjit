@@ -27,7 +27,7 @@ void _PG_init(void);
 void _PG_fini(void);
 
 #define DEBUG_GEN 0
-#define USE_EXTRA 1
+#define SHOW_TIME 1
 
 static const char *opcodeNames[] = {
 	"EEOP_DONE",
@@ -466,17 +466,17 @@ copyjit_compile_expr(ExprState *state)
 			elog(WARNING, "Need to build an %s - %i opcode at %p", opcodeNames[opcode], opcode, op);
 
 		offsets[opno] = neededsize;
-#if USE_EXTRA
-		if (opcode == EEOP_FUNCEXPR_STRICT) {
-			neededsize += stencils[EEOP_FUNCEXPR].code_size + op->d.func.nargs * extra_EEOP_FUNCEXPR_STRICT_CHECKER.code_size;
-		} else
-#endif
+
 		if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4eq) {
-			elog(WARNING, "Found a call to int4eq, inlining the hard way!");
+			if (DEBUG_GEN)
+				elog(WARNING, "Found a call to int4eq, inlining the hard way!");
 			neededsize += extra_EEOP_FUNCEXPR_STRICT_int4eq.code_size;
 		} else if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4lt) {
-			elog(WARNING, "Found a call to int4lt, inlining the hard way!");
+			if (DEBUG_GEN)
+				elog(WARNING, "Found a call to int4lt, inlining the hard way!");
 			neededsize += extra_EEOP_FUNCEXPR_STRICT_int4lt.code_size;
+		} else if (opcode == EEOP_FUNCEXPR_STRICT) {
+			neededsize += stencils[EEOP_FUNCEXPR].code_size + op->d.func.nargs * extra_EEOP_FUNCEXPR_STRICT_CHECKER.code_size;
 		} else if (stencils[opcode].code_size == -1) {
 			elog(WARNING, "UNSUPPORTED OPCODE %s", opcodeNames[opcode]);
 			canbuild = false;
@@ -498,8 +498,12 @@ copyjit_compile_expr(ExprState *state)
 			size_t next_offset = offsets[opno+1];
 			if (DEBUG_GEN)
 				elog(WARNING, "Adding stencil for %s, op address is %p", opcodeNames[opcode], op);
-#if USE_EXTRA
-			if (opcode == EEOP_FUNCEXPR_STRICT) {
+
+			if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4eq) {
+				offset += apply_stencil(&extra_EEOP_FUNCEXPR_STRICT_int4eq, state, builtcode, offsets, offset, next_offset, op);
+			} else if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4lt) {
+				offset += apply_stencil(&extra_EEOP_FUNCEXPR_STRICT_int4lt, state, builtcode, offsets, offset, next_offset, op);
+			} else if (opcode == EEOP_FUNCEXPR_STRICT) {
 				if (DEBUG_GEN)
 					elog(WARNING, "Adding %i extra_EEOP_FUNCEXPR_STRICT_CHECKER stencils", op->d.func.nargs);
 				for (int narg = 0 ; narg < op->d.func.nargs ; narg++) {
@@ -517,13 +521,6 @@ copyjit_compile_expr(ExprState *state)
 				}
 				// Now we can land back on normal func call
 				offset += apply_stencil(&stencils[EEOP_FUNCEXPR], state, builtcode, offsets, offset, next_offset, op);
-			} else
-#endif
-
-			if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4eq) {
-				offset += apply_stencil(&extra_EEOP_FUNCEXPR_STRICT_int4eq, state, builtcode, offsets, offset, next_offset, op);
-			} else if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4lt) {
-				offset += apply_stencil(&extra_EEOP_FUNCEXPR_STRICT_int4lt, state, builtcode, offsets, offset, next_offset, op);
 			} else {
 				offset += apply_stencil(&stencils[opcode], state, builtcode, offsets, offset, next_offset, op);
 			}
@@ -542,7 +539,7 @@ copyjit_compile_expr(ExprState *state)
 	INSTR_TIME_ACCUM_DIFF(context->base.instr.generation_counter,
 						  endtime, starttime);
 
-	if (DEBUG_GEN)
+	if (DEBUG_GEN || SHOW_TIME)
 		elog(WARNING, "Total JIT duration is %lius", INSTR_TIME_GET_MICROSEC(context->base.instr.generation_counter));
 	return canbuild;
 }
