@@ -13,5 +13,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: install PostgreSQL packages
+      run: sudo apt install postgresql-server-dev-all
+    - name: install llvm, to build the stencils
+      run: sudo apt install llvm clang
     - name: make
       run: make
