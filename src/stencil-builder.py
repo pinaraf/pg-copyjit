@@ -175,16 +175,20 @@ def generate_stencil(filename):
     extra_stencils = []
     for section in stencils_o["Sections"]:
         section = section["Section"]
+        print("Got a section... %s" % (section["Name"]["Value"]))
         if section["Name"]["Value"] == ".text":
             data = section["SectionData"]["Bytes"]
+            print("iterating symbols")
             for symbol in section["Symbols"]:
                 symbol = symbol["Symbol"]
                 symbolName = symbol["Name"]["Value"]
                 if symbolName.startswith("stencil_"):
+                    print("iterating symbols => stencil")
                     offset = symbol["Value"]
                     end = offset + symbol["Size"]
                     stencils.append(Stencil(symbolName[8:], data[offset:end], offset, end))
                 elif symbolName.startswith("extra_"):
+                    print("iterating symbols => extra")
                     offset = symbol["Value"]
                     end = offset + symbol["Size"]
                     extra_stencils.append(ExtraStencil(symbolName, data[offset:end], offset, end))
