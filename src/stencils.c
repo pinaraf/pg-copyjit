@@ -47,9 +47,27 @@ Datum stencil_EEOP_DONE (struct ExprState *expression, struct ExprContext *econt
 Datum stencil_EEOP_CONST (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	// Not optimal at all I think, but should be fine
-    *op.resnull = (char) ((intptr_t) &CONST_ISNULL); // op.d.constval.isnull;
+    /**op.resnull = 0;
+    if (((intptr_t) &CONST_ISNULL) & 0x01)
+	    *op.resnull = 1;*/
+    *op.resnull  = (char) ((intptr_t) &CONST_ISNULL); // op.d.constval.isnull
     *op.resvalue = (Datum) &CONST_VALUE; // op.d.constval.value;
+//    *op.resvalue = (Datum) 0xAABBCCDDEEFF0011; // op.d.constval.value;
 
+	goto_next;
+}
+
+Datum stencil_EEOP_CONST_NULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+*op.resnull = 1;
+*op.resvalue = (Datum) &CONST_VALUE; // op.d.constval.value;
+	goto_next;
+}
+
+Datum stencil_EEOP_CONST_NOTNULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+{
+*op.resnull = 0;
+*op.resvalue = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
 

@@ -384,6 +384,9 @@ static void apply_jump(unsigned char *builtcode, size_t offset, intptr_t target,
 
 static void apply_patch_with_target (unsigned char *builtcode, size_t offset, intptr_t target, const struct Patch *patch)
 {
+	// used for arm64
+	uint32_t *code = (uint32_t *) builtcode;
+	uint32_t value;
 	switch (patch->relkind) {
 		case RELKIND_R_X86_64_64:
 			if (DEBUG_GEN) {
@@ -406,6 +409,22 @@ static void apply_patch_with_target (unsigned char *builtcode, size_t offset, in
 			break;
 		case RELKIND_REJUMP:
 			apply_jump(builtcode, offset, target, patch);
+			break;
+		case RELKIND_R_AARCH64_MOVW_UABS_G0_NC:
+			value = target & 0xFFFF;
+			code[offset / 4] = (code[offset / 4] | (value << 5));
+			break;
+		case RELKIND_R_AARCH64_MOVW_UABS_G1_NC:
+			value = (target & 0xFFFF0000) >> 16;
+			code[offset / 4] = (code[offset / 4] | (value << 5));
+			break;
+		case RELKIND_R_AARCH64_MOVW_UABS_G2_NC:
+			value = (target & 0xFFFF00000000) >> 32;
+			code[offset / 4] = (code[offset / 4] | (value << 5));
+			break;
+		case RELKIND_R_AARCH64_MOVW_UABS_G3:
+			value = (target & 0xFFFF000000000000) >> 48;
+			code[offset / 4] = (code[offset / 4] | (value << 5));
 			break;
 		default:
 			elog(ERROR, "Unsupported relkind");
