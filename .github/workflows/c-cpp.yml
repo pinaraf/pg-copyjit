@@ -17,6 +17,8 @@ jobs:
       run: sudo apt install postgresql-common
     - name: install PostgreSQL packages - 2
       run: sudo apt install postgresql-server-dev-16
+    - name: install PostgreSQL packages - 3
+      run: sudo apt build-dep postgresql-16
     - name: install llvm, to build the stencils
       run: sudo apt install llvm clang
     - name: make
