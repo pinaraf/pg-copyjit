@@ -229,6 +229,19 @@ static const char *opcodeNames[] = {
 	"EEOP_LAST"
 };
 
+
+typedef struct CodeGen {
+	union Code {
+		uint32_t *as_u32;
+		void *as_void;
+		unsigned char *as_char;
+	} code;
+	int code_size;
+	int *offsets;
+	int trampoline_count;	// count the number of initialized trampolines
+	void **trampoline_targets;
+} CodeGen;
+
 void
 copyjit_reset_after_error(void)
 {
@@ -275,7 +288,36 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 	return ((ExprStateEvalFunc) state->evalfunc_private) (state, econtext, isNull);
 }
 
-static intptr_t get_patch_target(ExprState *state, unsigned char *builtcode, int *offsets, size_t next_offset, struct ExprEvalStep *op, const struct Patch *patch)
+#if defined(__aarch64__) || defined(_M_ARM64)
+
+#define TRAMPOLINE_SIZE 16
+
+static void build_aarch64_trampoline(uint32_t *code, const void *target)
+{
+	// Unlike x86, arm has a fixed instruction width.
+	// When it switched to 64 bits, instead of killing code density and thus performance,
+	// it stayed on 32 bits instruction width. This makes jumping to arbitrary adress harder.
+	// We create a small "trampoline", containing the following code:
+	// ldr x8, 8
+	// br x8
+	// XXXX
+	// YYYY
+	// where XXXX and YYYY are the two 32-bits parts of the 64 bits target.
+	// x8 is a scratch register, we are free to trash it.
+	// Note that code is a uint32_t here to use this fixed-instruction property...
+	code[0] = 0x58000048;
+	code[1] = 0xD61F0100;
+	code[2] = target & 0xffffffff;
+	code[3] = target >> 32;
+}
+
+#else
+
+#define TRAMPOLINE_SIZE 0
+
+#endif
+
+static intptr_t get_patch_target(ExprState *state, CodeGen *codeGen, size_t next_offset, struct ExprEvalStep *op, const struct Patch *patch)
 {
 	intptr_t target;
 	switch (patch->target) {
@@ -314,16 +356,16 @@ static intptr_t get_patch_target(ExprState *state, unsigned char *builtcode, int
 			break;
 		case TARGET_FORCE_NEXT_CALL:
 		case TARGET_NEXT_CALL:
-			target = (intptr_t) builtcode + next_offset;
+			target = (intptr_t) codeGen->code.as_void + next_offset;
 			break;
 		case TARGET_JUMP_DONE:
-			target = (intptr_t) builtcode + offsets[op->d.qualexpr.jumpdone];
+			target = (intptr_t) codeGen->code.as_void + codeGen->offsets[op->d.qualexpr.jumpdone];
 			break;
 		case TARGET_JUMP_NULL:
 			if (op->opcode == EEOP_AGG_PLAIN_PERGROUP_NULLCHECK)
-				target = (intptr_t) builtcode + offsets[op->d.agg_plain_pergroup_nullcheck.jumpnull];
+				target = (intptr_t) codeGen->code.as_void + codeGen->offsets[op->d.agg_plain_pergroup_nullcheck.jumpnull];
 			else if (op->opcode == EEOP_AGG_STRICT_INPUT_CHECK_ARGS)
-				target = (intptr_t) builtcode + offsets[op->d.agg_strict_input_check.jumpnull];
+				target = (intptr_t) codeGen->code.as_void + codeGen->offsets[op->d.agg_strict_input_check.jumpnull];
 			else
 				elog(ERROR, "Unsupported target TARGET_JUMP_NULL in opcode %s", opcodeNames[op->opcode]);
 			break;
@@ -367,84 +409,78 @@ static intptr_t get_patch_target(ExprState *state, unsigned char *builtcode, int
 	return target;
 }
 
-static void apply_jump(unsigned char *builtcode, size_t offset, intptr_t target, const struct Patch *patch)
+static void apply_jump(CodeGen *codeGen, size_t offset, intptr_t target, const struct Patch *patch)
 {
+	// Note: this is amd64 only
 	// A LOT OF FUN !
 	// target is an adress we need to jump to. we are playing with code with IP = offset+patch->offset
 	if (DEBUG_GEN)
-		elog(WARNING, "Asked to jump to %p, we are patching at %p", target, (intptr_t) builtcode + offset + patch->offset);
-	int64_t relative_jump = target - ((intptr_t) builtcode + offset + patch->offset);
+		elog(WARNING, "Asked to jump to %p, we are patching at %p", target, (intptr_t) codeGen->code.as_void + offset + patch->offset);
+	int64_t relative_jump = target - ((intptr_t) codeGen->code.as_void + offset + patch->offset);
 	// Note : one could build short jumps, but not sure it's worth the effort
 	// I assert we have no insane jump, but... meh, should implement a check
 	relative_jump -= 5;	// remove size of jump from offset
 	int32_t near_jump = (int32_t) relative_jump;
-	builtcode[offset + patch->offset] = 0xE9;
-	memcpy(builtcode + offset + patch->offset + 1, &near_jump, 4);
+	codeGen->code.as_char[offset + patch->offset] = 0xE9;
+	memcpy(codeGen->code.as_void + offset + patch->offset + 1, &near_jump, 4);
 }
 
-static void apply_patch_with_target (unsigned char *builtcode, size_t offset, intptr_t target, const struct Patch *patch)
+static void apply_patch_with_target (CodeGen *codeGen, size_t offset, intptr_t target, const struct Patch *patch)
 {
-	// used for arm64
-	uint32_t *code = (uint32_t *) builtcode;
+	size_t u32offset = offset / 4;
 	uint32_t value;
 	switch (patch->relkind) {
 		case RELKIND_R_X86_64_64:
-			if (DEBUG_GEN) {
-				elog(WARNING, "Patching %p at offset %02lu with relkind amd64", (void*) target, patch->offset);
-				elog(WARNING, "builtcode at %p, offset is %02lu, patch offset is %02lu", (void *) builtcode, offset, patch->offset);
-			}
-			//targetLocation = (uintptr_t*) builtcode[offset + patch->offset];
-			//*targetLocation = target;
-			/*
-			builtcode[offset + patch->offset + 7] = (target & 0xFF00000000000000) >> 56;
-			builtcode[offset + patch->offset + 6] = (target & 0x00FF000000000000) >> 48;
-			builtcode[offset + patch->offset + 5] = (target & 0x0000FF0000000000) >> 40;
-			builtcode[offset + patch->offset + 4] = (target & 0x000000FF00000000) >> 32;
-			builtcode[offset + patch->offset + 3] = (target & 0x00000000FF000000) >> 24;
-			builtcode[offset + patch->offset + 2] = (target & 0x0000000000FF0000) >> 16;
-			builtcode[offset + patch->offset + 1] = (target & 0x000000000000FF00) >> 8;
-			builtcode[offset + patch->offset + 0] = (target & 0x00000000000000FF) >> 0;
-			*/
-			memcpy(builtcode + offset + patch->offset, &target, 8);
+			memcpy(codeGen->code.as_void + offset + patch->offset, &target, 8);
 			break;
-		case RELKIND_REJUMP:
-			apply_jump(builtcode, offset, target, patch);
+		case RELKIND_REJUMP: // Reminder: this is an artificial one we created
+			apply_jump(codeGen, offset, target, patch);
 			break;
 		case RELKIND_R_AARCH64_MOVW_UABS_G0_NC:
 			value = target & 0xFFFF;
-			code[offset / 4] = (code[offset / 4] | (value << 5));
+			codeGen->code.as_u32[u32offset] = (codeGen->code.as_u32[u32offset] | (value << 5));
 			break;
 		case RELKIND_R_AARCH64_MOVW_UABS_G1_NC:
 			value = (target & 0xFFFF0000) >> 16;
-			code[offset / 4] = (code[offset / 4] | (value << 5));
+			codeGen->code.as_u32[u32offset] = (codeGen->code.as_u32[u32offset] | (value << 5));
 			break;
 		case RELKIND_R_AARCH64_MOVW_UABS_G2_NC:
 			value = (target & 0xFFFF00000000) >> 32;
-			code[offset / 4] = (code[offset / 4] | (value << 5));
+			codeGen->code.as_u32[u32offset] = (codeGen->code.as_u32[u32offset] | (value << 5));
 			break;
 		case RELKIND_R_AARCH64_MOVW_UABS_G3:
 			value = (target & 0xFFFF000000000000) >> 48;
-			code[offset / 4] = (code[offset / 4] | (value << 5));
+			codeGen->code.as_u32[u32offset] = (codeGen->code.as_u32[u32offset] | (value << 5));
 			break;
+#if 0
+		case RELKIND_R_AARCH64_JUMP26:
+			value = NULL;
+			code = NULL;
+			break;
+		case RELKIND_R_AARCH64_CALL26:
+			value = NULL;
+			code = NULL;
+			break;
+#endif
 		default:
 			elog(ERROR, "Unsupported relkind");
 			break;
 	}
 }
 
-static void apply_patch (ExprState *state, unsigned char *builtcode, int *offsets, size_t offset, size_t next_offset, struct ExprEvalStep *op, const struct Patch *patch)
+static void apply_patch (ExprState *state, CodeGen *codeGen, size_t offset, size_t next_offset, struct ExprEvalStep *op, const struct Patch *patch)
 {
-	intptr_t target = get_patch_target(state, builtcode, offsets, next_offset, op, patch);
+	intptr_t target = get_patch_target(state, codeGen, next_offset, op, patch);
 
-	apply_patch_with_target(builtcode, offset, target, patch);
+	apply_patch_with_target(codeGen, offset, target, patch);
 }
 
-static size_t apply_stencil (struct Stencil *stencil, ExprState *state, unsigned char *builtcode, int *offsets, size_t offset, size_t next_offset, struct ExprEvalStep *op)
+static size_t apply_stencil (struct Stencil *stencil, ExprState *state, CodeGen *codeGen, size_t offset, size_t next_offset, struct ExprEvalStep *op)
 {
-	memcpy(builtcode + offset, stencil->code, stencil->code_size);
+	memcpy(codeGen->code.as_void + offset, stencil->code, stencil->code_size);
 	for (int p = 0 ; p < stencil->patch_size ; p++) {
 		const struct Patch *patch = &stencil->patches[p];
-		apply_patch(state, builtcode, offsets, offset, next_offset, op, patch);
+		apply_patch(state, codeGen, offset, next_offset, op, patch);
 	}
 	return stencil->code_size;
 }
@@ -456,11 +492,16 @@ copyjit_compile_expr(ExprState *state)
 	instr_time	starttime;
 	instr_time	endtime;
 	bool canbuild = true;
+	int required_trampolines = 0;
+	int assigned_trampolines = 0;
+	void *trampoline_targets = NULL;
 	size_t neededsize = 0;
-	unsigned char *builtcode;
 	size_t offset = 0;
+
+	CodeGen codeGen;
+	memset(&codeGen, 0, sizeof(codeGen));
+
 	int mprotect_res;
-	int *offsets;
 
 	PlanState  *parent = state->parent;
 	Assert(parent);
@@ -476,7 +517,7 @@ copyjit_compile_expr(ExprState *state)
 	INSTR_TIME_SET_CURRENT(starttime);
 
 	// This offset array is usefull later when jumps appear...
-	offsets = malloc(sizeof(int) * state->steps_len);
+	codeGen.offsets = malloc(sizeof(int) * state->steps_len);
 	for (int opno = 0; opno < state->steps_len; opno++)
 	{
 		struct ExprEvalStep *op = &state->steps[opno];
@@ -484,7 +525,7 @@ copyjit_compile_expr(ExprState *state)
 		if (DEBUG_GEN)
 			elog(WARNING, "Need to build an %s - %i opcode at %p", opcodeNames[opcode], opcode, op);
 
-		offsets[opno] = neededsize;
+		codeGen.offsets[opno] = neededsize;
 
 		if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4eq) {
 			if (DEBUG_GEN)
@@ -501,57 +542,77 @@ copyjit_compile_expr(ExprState *state)
 			canbuild = false;
 		} else {
 			neededsize += stencils[opcode].code_size;
+			if (TRAMPOLINE_SIZE) {
+				// Check for patches that require trampolines to be built
+				for (int p = 0 ; p < stencils[opcode].patch_size ; p++) {
+					if (stencils[opcode].patches[p].relkind == RELKIND_R_AARCH64_CALL26)
+						required_trampolines++;
+				}
+			}
 		}
+	}
+
+	if (required_trampolines && TRAMPOLINE_SIZE) {
+		trampoline_targets = malloc(sizeof(void*) * required_trampolines);
+		memset(trampoline_targets, 0, TRAMPOLINE_SIZE * required_trampolines);
 	}
 
 	// All opcodes are accounted for, we can proceed
 	if (canbuild) {
-		builtcode = mmap(0, neededsize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-		context->code = builtcode;
-		context->code_size = neededsize;
+		// Initialize the various codeGen fields
+		codeGen.code_size = neededsize;
+		// We will need required_trampolines * TRAMPOLINE_SIZE of memory, appended at the end of the code
+		codeGen.code.as_void = mmap(0, neededsize + required_trampolines * TRAMPOLINE_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+		if (TRAMPOLINE_SIZE) {
+			codeGen.trampoline_count = 0;
+			codeGen.trampoline_targets = malloc(sizeof(void*) *required_trampolines);
+		}
+		context->code = codeGen.code.as_void;
+		context->code_size = neededsize + required_trampolines * TRAMPOLINE_SIZE;
 
 		for (int opno = 0 ; opno < state->steps_len ; opno++)
 		{
 			struct ExprEvalStep *op = &state->steps[opno];
 			ExprEvalOp opcode = ExecEvalStepOp(state, op);
-			size_t next_offset = offsets[opno+1];
+			size_t next_offset = codeGen.offsets[opno+1];
 			if (DEBUG_GEN)
 				elog(WARNING, "Adding stencil for %s, op address is %p", opcodeNames[opcode], op);
 
 			if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4eq) {
-				offset += apply_stencil(&extra_EEOP_FUNCEXPR_STRICT_int4eq, state, builtcode, offsets, offset, next_offset, op);
+				offset += apply_stencil(&extra_EEOP_FUNCEXPR_STRICT_int4eq, state, &codeGen, offset, next_offset, op);
 			} else if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4lt) {
-				offset += apply_stencil(&extra_EEOP_FUNCEXPR_STRICT_int4lt, state, builtcode, offsets, offset, next_offset, op);
+				offset += apply_stencil(&extra_EEOP_FUNCEXPR_STRICT_int4lt, state, &codeGen, offset, next_offset, op);
 			} else if (opcode == EEOP_FUNCEXPR_STRICT) {
-				if (DEBUG_GEN)
-					elog(WARNING, "Adding %i extra_EEOP_FUNCEXPR_STRICT_CHECKER stencils", op->d.func.nargs);
+				// Prepend {op->d.func.nargs} extra_EEOP_FUNCEXPR_STRICT_CHECKER stencils before falling back on a FUNCEXPR
 				for (int narg = 0 ; narg < op->d.func.nargs ; narg++) {
-					memcpy(builtcode + offset, extra_EEOP_FUNCEXPR_STRICT_CHECKER.code, extra_EEOP_FUNCEXPR_STRICT_CHECKER.code_size);
+					memcpy(codeGen.code.as_void + offset, extra_EEOP_FUNCEXPR_STRICT_CHECKER.code, extra_EEOP_FUNCEXPR_STRICT_CHECKER.code_size);
 					for (int p = 0 ; p < extra_EEOP_FUNCEXPR_STRICT_CHECKER.patch_size ; p++) {
 						const struct Patch *patch = &extra_EEOP_FUNCEXPR_STRICT_CHECKER.patches[p];
 						if (patch->target == TARGET_FUNC_ARG) {
 							NullableDatum *func_arg = &(op->d.func.fcinfo_data->args[narg]);
-							apply_patch_with_target(builtcode, offset, (intptr_t) func_arg, patch);
+							apply_patch_with_target(&codeGen, offset, (intptr_t) func_arg, patch);
 						} else {
-							apply_patch(state, builtcode, offsets, offset, next_offset, op, patch);
+							apply_patch(state, &codeGen, offset, next_offset, op, patch);
 						}
 					}
 					offset += extra_EEOP_FUNCEXPR_STRICT_CHECKER.code_size;
 				}
 				// Now we can land back on normal func call
-				offset += apply_stencil(&stencils[EEOP_FUNCEXPR], state, builtcode, offsets, offset, next_offset, op);
+				offset += apply_stencil(&stencils[EEOP_FUNCEXPR], state, &codeGen, offset, next_offset, op);
 			} else {
-				offset += apply_stencil(&stencils[opcode], state, builtcode, offsets, offset, next_offset, op);
+				offset += apply_stencil(&stencils[opcode], state, &codeGen, offset, next_offset, op);
 			}
 		}
-		mprotect_res = mprotect(builtcode, neededsize, PROT_EXEC);
+		mprotect_res = mprotect(codeGen.code.as_void, neededsize, PROT_EXEC);
 		if (DEBUG_GEN)
 			elog(WARNING, "Result of mprotect is %i", mprotect_res);
-		state->evalfunc_private = builtcode;
-		state->evalfunc = (ExprStateEvalFunc) builtcode; // When this one starts being usefull, we can bring it back. ExecRunCompiledExpr;
+		state->evalfunc_private = codeGen.code.as_void;
+		state->evalfunc = (ExprStateEvalFunc) codeGen.code.as_void; // When this one starts being usefull, we can bring it back. ExecRunCompiledExpr;
 		state->evalfunc = ExecRunCompiledExpr;
 	}
-	free(offsets);
+	free(codeGen.offsets);
+	if (trampoline_targets)
+		free(trampoline_targets);
 
 	INSTR_TIME_SET_CURRENT(endtime);
 	INSTR_TIME_SET_ZERO(context->base.instr.generation_counter);

@@ -57,17 +57,17 @@ Datum stencil_EEOP_CONST (struct ExprState *expression, struct ExprContext *econ
 	goto_next;
 }
 
-Datum stencil_EEOP_CONST_NULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+Datum extra_EEOP_CONST_NULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
-*op.resnull = 1;
-*op.resvalue = (Datum) &CONST_VALUE; // op.d.constval.value;
+	*op.resnull = 1;
+	*op.resvalue = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
 
-Datum stencil_EEOP_CONST_NOTNULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+Datum extra_EEOP_CONST_NOTNULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
-*op.resnull = 0;
-*op.resvalue = (Datum) &CONST_VALUE; // op.d.constval.value;
+	*op.resnull = 0;
+	*op.resvalue = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
 
@@ -428,7 +428,7 @@ Datum stencil_EEOP_PARAM_EXTERN (struct ExprState *expression, struct ExprContex
 	ExecEvalParamExtern(expression, &op, econtext);
 	goto_next;
 }
-
+/*
 Datum stencil_EEOP_AGGREF (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	int			aggno = op.d.aggref.aggno;
@@ -438,7 +438,7 @@ Datum stencil_EEOP_AGGREF (struct ExprState *expression, struct ExprContext *eco
 
 	goto_next;
 }
-
+*/
 static pg_attribute_always_inline void
 ExecAggPlainTransByVal(AggState *aggstate, AggStatePerTrans pertrans,
 					   AggStatePerGroup pergroup,

@@ -86,8 +86,8 @@ class Patch(object):
         self.kind = kind
         self.offset = offset
 
-    def dump_patch(self):
-        print("{%s, RELKIND_%s, TARGET_%s}," % (self.offset, self.kind, self.target))
+    def dump_patch(self, out_fd):
+        out_fd.write("{%s, RELKIND_%s, TARGET_%s}," % (self.offset, self.kind, self.target))
 
 class Stencil(object):
     def __init__ (self, name, code, start, end, arch):
@@ -156,49 +156,77 @@ class Stencil(object):
                         patch.kind = 'REJUMP'
             self.code = [x for x in code]
 
-    def dump_code(self):
-        print("const unsigned char %s__code[%s] = {%s};" % (self.name, len(self.code), ", ".join([hex(x) for x in self.code])))
+    def dump_code(self, out_fd):
+        out_fd.write("const unsigned char %s__code[%s] = {%s};\n" % (self.name, len(self.code), ", ".join([hex(x) for x in self.code])))
 
-    def dump_patches(self):
+    def dump_patches(self, out_fd):
         if len(self.patches) == 0:
-            print("// No patch for %s" % self.name)
+            out_fd.write("// No patch for %s\n" % self.name)
         else:
-            print("const Patch %s__patches[%s] = {" % (self.name, len(self.patches)))
+            out_fd.write("const Patch %s__patches[%s] = {" % (self.name, len(self.patches)))
             for patch in self.patches:
-                patch.dump_patch()
-            print("};")
+                patch.dump_patch(out_fd)
+            out_fd.write("};\n")
 
-    def dump_initializer(self):
+    def dump_initializer(self, out_fd):
         if len(self.patches) == 0:
-            print("stencils[%s].code_size = %s; stencils[%s].code = %s__code; stencils[%s].patch_size = 0;" % (self.name, len(self.code), self.name, self.name, self.name))
+            out_fd.write("stencils[%s].code_size = %s; stencils[%s].code = %s__code; stencils[%s].patch_size = 0;\n" % (self.name, len(self.code), self.name, self.name, self.name))
         else:
-            print("stencils[%s].code_size = %s; stencils[%s].code = %s__code;" % (self.name, len(self.code), self.name, self.name))
-            print("stencils[%s].patch_size = %s; stencils[%s].patches = %s__patches;" % (self.name, len(self.patches), self.name, self.name))
+            out_fd.write("stencils[%s].code_size = %s; stencils[%s].code = %s__code;\n" % (self.name, len(self.code), self.name, self.name))
+            out_fd.write("stencils[%s].patch_size = %s; stencils[%s].patches = %s__patches;\n" % (self.name, len(self.patches), self.name, self.name))
 
 class ExtraStencil(Stencil):
-    def dump_initializer(self):
+    def dump_initializer(self, out_fd):
         if len(self.patches) == 0:
-            print("struct Stencil %s = { .code_size = %s, .code = %s__code, .patch_size = 0; };" % (self.name, len(self.code), self.name))
+            out_fd.write("struct Stencil %s = { .code_size = %s, .code = %s__code, .patch_size = 0; };\n" % (self.name, len(self.code), self.name))
         else:
-            print("struct Stencil %s = { .code_size = %s, .code = %s__code, .patch_size = %s, .patches = %s__patches };" % (self.name, len(self.code), self.name, len(self.patches), self.name))
+            out_fd.write("struct Stencil %s = { .code_size = %s, .code = %s__code, .patch_size = %s, .patches = %s__patches };\n" % (self.name, len(self.code), self.name, len(self.patches), self.name))
 
-def generate_stencil(filename):
-    objdump = json.load(open(filename, "r"))
+def generate_stencil(in_filename, out_filename):
+    objdump = json.load(open(in_filename, "r"))
     stencils_o = objdump[0]
-    if type(stencils_o) == dict:
-        stencils_o = stencils_o[list(stencils_o.keys())[0]]
+    #if type(stencils_o) == dict:
+    #    stencils_o = stencils_o[list(stencils_o.keys())[0]]
+    print(stencils_o.keys())
     arch = stencils_o["FileSummary"]["Arch"]
     stencils = []
     extra_stencils = []
     for section in stencils_o["Sections"]:
         section = section["Section"]
-        print("Got a section... %s" % (section["Name"]["Value"]))
-        if section["Name"]["Value"] == ".text":
+        if section["Name"]["Name"] == ".ltext":
             data = section["SectionData"]["Bytes"]
             print("iterating symbols")
             for symbol in section["Symbols"]:
+                """
+            {
+              "Symbol": {
+                "Name": {
+                  "Name": "stencil_EEOP_CONST",
+                  "Value": 334
+                },
+                "Value": 16,
+                "Size": 66,
+                "Binding": {
+                  "Name": "Global",
+                  "Value": 1
+                },
+                "Type": {
+                  "Name": "Function",
+                  "Value": 2
+                },
+                "Other": {
+                  "Value": 0,
+                  "Flags": []
+                },
+                "Section": {
+                  "Name": ".ltext",
+                  "Value": 3
+                }
+              }
+            },"""
+                print("... symbol")
                 symbol = symbol["Symbol"]
-                symbolName = symbol["Name"]["Value"]
+                symbolName = symbol["Name"]["Name"]
                 if symbolName.startswith("stencil_"):
                     print("iterating symbols => stencil")
                     offset = symbol["Value"]
@@ -209,14 +237,32 @@ def generate_stencil(filename):
                     offset = symbol["Value"]
                     end = offset + symbol["Size"]
                     extra_stencils.append(ExtraStencil(symbolName, data[offset:end], offset, end, arch))
+                else:
+                    print(f"unknown symbol {symbolName}")
 
 
-        if section["Name"]["Value"] == ".rela.text":
-            data = section["SectionData"]["Bytes"]
+        if section["Name"]["Name"] == ".rela.ltext":
             for relocation in section["Relocations"]:
+                print("Checking reloc")
+                """
+            {
+              "Relocation": {
+                "Offset": 18,
+                "Type": {
+                  "Name": "R_X86_64_64",
+                  "Value": 1
+                },
+                "Symbol": {
+                  "Name": "CONST_ISNULL",
+                  "Value": 4
+                },
+                "Addend": 0
+              }
+            },
+                """
                 relocation = relocation["Relocation"]
-                relkind = relocation["Type"]["Value"]
-                target = relocation["Symbol"]["Value"]
+                relkind = relocation["Type"]["Name"]
+                target = relocation["Symbol"]["Name"]
                 code_offset = relocation["Offset"]
                 patch = Patch(target, relkind, code_offset)
 
@@ -225,21 +271,25 @@ def generate_stencil(filename):
                     if stencil.start <= patch.offset and stencil.end > patch.offset:
                         stencil.add_patch(patch)
                         break
+                else:
+                    raise Exception("Patch not matched to a stencil")
 
-    print(prefix)
-    for stencil in stencils + extra_stencils:
-        stencil.strip_code()
-        stencil.dump_code()
-        stencil.dump_patches()
+    with open(out_filename, "w") as out_fd:
+        out_fd.write(prefix)
+        for stencil in stencils + extra_stencils:
+            stencil.strip_code()
+            stencil.dump_code(out_fd)
+            stencil.dump_patches(out_fd)
 
-    print(prefix_initializer)
-    for stencil in stencils:
-        stencil.dump_initializer()
-    print(postfix_initializer)
-    for extra in extra_stencils:
-        extra.dump_initializer()
+        out_fd.write(prefix_initializer)
+        for stencil in stencils:
+            stencil.dump_initializer(out_fd)
+        out_fd.write(postfix_initializer)
+        for extra in extra_stencils:
+            extra.dump_initializer(out_fd)
 
 if __name__ == "__main__":
     # args machin
     filename = sys.argv[1]
-    generate_stencil(filename)
+    output = sys.argv[2]
+    generate_stencil(filename, output)
