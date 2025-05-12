@@ -428,17 +428,20 @@ Datum stencil_EEOP_PARAM_EXTERN (struct ExprState *expression, struct ExprContex
 	ExecEvalParamExtern(expression, &op, econtext);
 	goto_next;
 }
-/*
+
 Datum stencil_EEOP_AGGREF (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
+#if PG_VERSION_NUM < 140000
+	int			aggno = op.d.aggref.astate->aggno;
+#else
 	int			aggno = op.d.aggref.aggno;
-
+#endif
 	*op.resvalue = econtext->ecxt_aggvalues[aggno];
 	*op.resnull = econtext->ecxt_aggnulls[aggno];
 
 	goto_next;
 }
-*/
+
 static pg_attribute_always_inline void
 ExecAggPlainTransByVal(AggState *aggstate, AggStatePerTrans pertrans,
 					   AggStatePerGroup pergroup,
