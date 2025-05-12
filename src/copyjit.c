@@ -239,7 +239,7 @@ typedef struct CodeGen {
 	int code_size;
 	int *offsets;
 	int trampoline_count;	// count the number of initialized trampolines
-	void **trampoline_targets;
+	intptr_t *trampoline_targets;
 } CodeGen;
 
 void
@@ -296,7 +296,7 @@ static void build_aarch64_trampoline(uint32_t *code, const void *target)
 {
 	// Unlike x86, arm has a fixed instruction width.
 	// When it switched to 64 bits, instead of killing code density and thus performance,
-	// it stayed on 32 bits instruction width. This makes jumping to arbitrary adress harder.
+	// it stayed on 32 bits instruction width. This makes jumping to arbitrary address harder.
 	// We create a small "trampoline", containing the following code:
 	// ldr x8, 8
 	// br x8
@@ -311,9 +311,39 @@ static void build_aarch64_trampoline(uint32_t *code, const void *target)
 	code[3] = target >> 32;
 }
 
+static void apply_arm64_x26 (CodeGen *codeGen, size_t u32offset, intptr_t target)
+{
+	uint32_t *beginning_trampoline_area = codeGen->code.as_u32 + codeGen->code_size / 4;
+	for (int t = 0 ; t < codeGen->trampoline_count ; t++) {
+		if (codeGen->trampoline_targets[t] == target)
+			break;
+	}
+	intptr_t trampoline_address = beginning_trampoline_area + TRAMPOLINE_SIZE / 4;
+	if (t == codeGen->trampoline_count) {
+		// The target has not yet been 'trampolined', let's do it
+		build_aarch64_trampoline(trampoline_address, target);
+		codeGen->trampoline_targets[t] = target;
+	}
+	// Now we can code a 26bits delta using the offset between codeGen->code+u32offset and trampoline_address
+	intptr_t current_address = &(codeGen->code.as_u32[u32offset]);
+	int32_t delta = current_address - trampoline_address;
+	if (delta < (1 << 26) && delta > -(1 << 26))
+		elog(WARNING, "Computed delta, %p, from %p to %p, is far too big", delta, current_address, trampoline_address);
+
+	// Force instruction target bits to 0, for safety
+	codeGen->code.as_u32[u32offset] &= 0xFC000000;
+	// Now encode the delta in there
+	codeGen->code.as_u32[u32offset] &= (delta & ~0xFC000000);
+}
+
+#elif defined(__x86_64__)
+
+// No trampoline on amd64
+#define TRAMPOLINE_SIZE 0
+
 #else
 
-#define TRAMPOLINE_SIZE 0
+#error "Unsupported CPU architecture. Please, please, please, contact me so we can work on it!"
 
 #endif
 
@@ -413,7 +443,7 @@ static void apply_jump(CodeGen *codeGen, size_t offset, intptr_t target, const s
 {
 	// Note: this is amd64 only
 	// A LOT OF FUN !
-	// target is an adress we need to jump to. we are playing with code with IP = offset+patch->offset
+	// target is an address we need to jump to. we are playing with code with IP = offset+patch->offset
 	if (DEBUG_GEN)
 		elog(WARNING, "Asked to jump to %p, we are patching at %p", target, (intptr_t) codeGen->code.as_void + offset + patch->offset);
 	int64_t relative_jump = target - ((intptr_t) codeGen->code.as_void + offset + patch->offset);
@@ -430,12 +460,15 @@ static void apply_patch_with_target (CodeGen *codeGen, size_t offset, intptr_t t
 	size_t u32offset = offset / 4;
 	uint32_t value;
 	switch (patch->relkind) {
+#if defined(__x86_64__)
 		case RELKIND_R_X86_64_64:
 			memcpy(codeGen->code.as_void + offset + patch->offset, &target, 8);
 			break;
 		case RELKIND_REJUMP: // Reminder: this is an artificial one we created
 			apply_jump(codeGen, offset, target, patch);
 			break;
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
 		case RELKIND_R_AARCH64_MOVW_UABS_G0_NC:
 			value = target & 0xFFFF;
 			codeGen->code.as_u32[u32offset] = (codeGen->code.as_u32[u32offset] | (value << 5));
@@ -452,14 +485,10 @@ static void apply_patch_with_target (CodeGen *codeGen, size_t offset, intptr_t t
 			value = (target & 0xFFFF000000000000) >> 48;
 			codeGen->code.as_u32[u32offset] = (codeGen->code.as_u32[u32offset] | (value << 5));
 			break;
-#if 0
+		// These two require trampolines
 		case RELKIND_R_AARCH64_JUMP26:
-			value = NULL;
-			code = NULL;
-			break;
 		case RELKIND_R_AARCH64_CALL26:
-			value = NULL;
-			code = NULL;
+			apply_arm64_x26(codeGen, u32offset, target);
 			break;
 #endif
 		default:
