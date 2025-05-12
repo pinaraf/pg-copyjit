@@ -182,6 +182,30 @@ class ExtraStencil(Stencil):
         else:
             out_fd.write("struct Stencil %s = { .code_size = %s, .code = %s__code, .patch_size = %s, .patches = %s__patches };\n" % (self.name, len(self.code), self.name, len(self.patches), self.name))
 
+def sections_iterator(sections, major):
+    for section in sections:
+        section = section["Section"]
+        if major < 15:
+            yield (section["Name"]["Value"], section)
+        else:
+            yield (section["Name"]["Name"], section)
+
+def relocations_iterator(relocations, major):
+    for relocation in relocations:
+        relocation = relocation["Relocation"]
+        if major < 15:
+            yield (relocation["Type"]["Value"], relocation["Symbol"]["Value"], relocation["Offset"], relocation)
+        else:
+            yield (relocation["Type"]["Name"], relocation["Symbol"]["Name"], relocation["Offset"], relocation)
+
+def symbols_iterator(symbols, major):
+    for symbol in symbols:
+        symbol = symbol["Symbol"]
+        if major < 15:
+            yield (symbol["Name"]["Value"], symbol["Value"], symbol["Size"], symbol)
+        else:
+            yield (symbol["Name"]["Name"], symbol["Value"], symbol["Size"], symbol)
+
 def generate_stencil(readobj_major, in_filename, out_filename):
     objdump = json.load(open(in_filename, "r"))
     stencils_o = objdump[0]
@@ -191,79 +215,26 @@ def generate_stencil(readobj_major, in_filename, out_filename):
     arch = stencils_o["FileSummary"]["Arch"]
     stencils = []
     extra_stencils = []
-    for section in stencils_o["Sections"]:
-        section = section["Section"]
-        if section["Name"]["Name"] == ".ltext":
+    for (section_name, section) in sections_iterator(stencils_o["Sections"], readobj_major):
+        if section_name == ".ltext":
             data = section["SectionData"]["Bytes"]
             print("iterating symbols")
-            for symbol in section["Symbols"]:
-                """
-            {
-              "Symbol": {
-                "Name": {
-                  "Name": "stencil_EEOP_CONST",
-                  "Value": 334
-                },
-                "Value": 16,
-                "Size": 66,
-                "Binding": {
-                  "Name": "Global",
-                  "Value": 1
-                },
-                "Type": {
-                  "Name": "Function",
-                  "Value": 2
-                },
-                "Other": {
-                  "Value": 0,
-                  "Flags": []
-                },
-                "Section": {
-                  "Name": ".ltext",
-                  "Value": 3
-                }
-              }
-            },"""
+            for (symbol_name, symbol_offset, symbol_size, symbol) in symbols_iterator(section["Symbols"], readobj_major):
                 print("... symbol")
-                symbol = symbol["Symbol"]
-                symbolName = symbol["Name"]["Name"]
-                if symbolName.startswith("stencil_"):
+                if symbol_name.startswith("stencil_"):
                     print("iterating symbols => stencil")
-                    offset = symbol["Value"]
-                    end = offset + symbol["Size"]
-                    stencils.append(Stencil(symbolName[8:], data[offset:end], offset, end, arch))
-                elif symbolName.startswith("extra_"):
+                    end = symbol_offset + symbol_size
+                    stencils.append(Stencil(symbol_name[8:], data[symbol_offset:end], symbol_offset, end, arch))
+                elif symbol_name.startswith("extra_"):
                     print("iterating symbols => extra")
-                    offset = symbol["Value"]
-                    end = offset + symbol["Size"]
-                    extra_stencils.append(ExtraStencil(symbolName, data[offset:end], offset, end, arch))
+                    end = symbol_offset + symbol_size
+                    extra_stencils.append(ExtraStencil(symbol_name, data[symbol_offset:end], symbol_offset, end, arch))
                 else:
                     print(f"unknown symbol {symbolName}")
 
 
-        if section["Name"]["Name"] == ".rela.ltext":
-            for relocation in section["Relocations"]:
-                print("Checking reloc")
-                """
-            {
-              "Relocation": {
-                "Offset": 18,
-                "Type": {
-                  "Name": "R_X86_64_64",
-                  "Value": 1
-                },
-                "Symbol": {
-                  "Name": "CONST_ISNULL",
-                  "Value": 4
-                },
-                "Addend": 0
-              }
-            },
-                """
-                relocation = relocation["Relocation"]
-                relkind = relocation["Type"]["Name"]
-                target = relocation["Symbol"]["Name"]
-                code_offset = relocation["Offset"]
+        if section_name == ".rela.ltext":
+            for (relkind, target, code_offset, relocation) in relocations_iterator(section["Relocations"], readobj_major):
                 patch = Patch(target, relkind, code_offset)
 
                 # match the patch to a stencil
