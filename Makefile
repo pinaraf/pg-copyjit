@@ -41,6 +41,6 @@ src/stencils.json: src/stencils.o
 	llvm-readobj --elf-output-style=JSON --pretty-print --expand-relocs --section-data --section-relocations --section-symbols --sections src/stencils.o > src/stencils.json
 
 src/built-stencils.h: src/stencils.json src/stencil-builder.py
-	python3 src/stencil-builder.py src/stencils.json src/built-stencils.h
+	python3 src/stencil-builder.py `llvm-config --version` src/stencils.json src/built-stencils.h
 
 src/copyjit.o: src/built-stencils.h

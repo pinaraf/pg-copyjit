@@ -182,11 +182,11 @@ class ExtraStencil(Stencil):
         else:
             out_fd.write("struct Stencil %s = { .code_size = %s, .code = %s__code, .patch_size = %s, .patches = %s__patches };\n" % (self.name, len(self.code), self.name, len(self.patches), self.name))
 
-def generate_stencil(in_filename, out_filename):
+def generate_stencil(readobj_major, in_filename, out_filename):
     objdump = json.load(open(in_filename, "r"))
     stencils_o = objdump[0]
-    #if type(stencils_o) == dict:
-    #    stencils_o = stencils_o[list(stencils_o.keys())[0]]
+    if readobj_major < 15 and type(stencils_o) == dict:
+        stencils_o = stencils_o[list(stencils_o.keys())[0]]
     print(stencils_o.keys())
     arch = stencils_o["FileSummary"]["Arch"]
     stencils = []
@@ -289,7 +289,9 @@ def generate_stencil(in_filename, out_filename):
             extra.dump_initializer(out_fd)
 
 if __name__ == "__main__":
-    # args machin
-    filename = sys.argv[1]
-    output = sys.argv[2]
-    generate_stencil(filename, output)
+    # args readobj-version source.json target.c
+    readobj_version = sys.argv[1]
+    major_version = int(readobj_version.split('.')[0])
+    filename = sys.argv[2]
+    output = sys.argv[3]
+    generate_stencil(major_version, filename, output)
