@@ -292,7 +292,7 @@ ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 
 #define TRAMPOLINE_SIZE 16
 
-static void build_aarch64_trampoline(uint32_t *code, const void *target)
+static void build_aarch64_trampoline(uint32_t *code, intptr_t target)
 {
 	// Unlike x86, arm has a fixed instruction width.
 	// When it switched to 64 bits, instead of killing code density and thus performance,
@@ -314,7 +314,8 @@ static void build_aarch64_trampoline(uint32_t *code, const void *target)
 static void apply_arm64_x26 (CodeGen *codeGen, size_t u32offset, intptr_t target)
 {
 	uint32_t *beginning_trampoline_area = codeGen->code.as_u32 + codeGen->code_size / 4;
-	for (int t = 0 ; t < codeGen->trampoline_count ; t++) {
+	int t;
+	for (t = 0 ; t < codeGen->trampoline_count ; t++) {
 		if (codeGen->trampoline_targets[t] == target)
 			break;
 	}
@@ -323,6 +324,7 @@ static void apply_arm64_x26 (CodeGen *codeGen, size_t u32offset, intptr_t target
 		// The target has not yet been 'trampolined', let's do it
 		build_aarch64_trampoline(trampoline_address, target);
 		codeGen->trampoline_targets[t] = target;
+		codeGen->trampoline_count++;
 	}
 	// Now we can code a 26bits delta using the offset between codeGen->code+u32offset and trampoline_address
 	intptr_t current_address = &(codeGen->code.as_u32[u32offset]);
@@ -522,8 +524,6 @@ copyjit_compile_expr(ExprState *state)
 	instr_time	endtime;
 	bool canbuild = true;
 	int required_trampolines = 0;
-	int assigned_trampolines = 0;
-	void *trampoline_targets = NULL;
 	size_t neededsize = 0;
 	size_t offset = 0;
 
@@ -581,11 +581,6 @@ copyjit_compile_expr(ExprState *state)
 		}
 	}
 
-	if (required_trampolines && TRAMPOLINE_SIZE) {
-		trampoline_targets = malloc(sizeof(void*) * required_trampolines);
-		memset(trampoline_targets, 0, TRAMPOLINE_SIZE * required_trampolines);
-	}
-
 	// All opcodes are accounted for, we can proceed
 	if (canbuild) {
 		// Initialize the various codeGen fields
@@ -595,6 +590,7 @@ copyjit_compile_expr(ExprState *state)
 		if (TRAMPOLINE_SIZE) {
 			codeGen.trampoline_count = 0;
 			codeGen.trampoline_targets = malloc(sizeof(void*) *required_trampolines);
+			memset(codeGen.trampoline_targets, 0, TRAMPOLINE_SIZE * required_trampolines);
 		}
 		context->code = codeGen.code.as_void;
 		context->code_size = neededsize + required_trampolines * TRAMPOLINE_SIZE;
@@ -640,8 +636,8 @@ copyjit_compile_expr(ExprState *state)
 		state->evalfunc = ExecRunCompiledExpr;
 	}
 	free(codeGen.offsets);
-	if (trampoline_targets)
-		free(trampoline_targets);
+	if (codeGen.trampoline_targets)
+		free(codeGen.trampoline_targets);
 
 	INSTR_TIME_SET_CURRENT(endtime);
 	INSTR_TIME_SET_ZERO(context->base.instr.generation_counter);
