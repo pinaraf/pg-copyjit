@@ -216,7 +216,7 @@ def generate_stencil(readobj_major, in_filename, out_filename):
     stencils = []
     extra_stencils = []
     for (section_name, section) in sections_iterator(stencils_o["Sections"], readobj_major):
-        if section_name == ".ltext":
+        if section_name in (".ltext", ".text"):
             data = section["SectionData"]["Bytes"]
             print("iterating symbols")
             for (symbol_name, symbol_offset, symbol_size, symbol) in symbols_iterator(section["Symbols"], readobj_major):
@@ -233,7 +233,7 @@ def generate_stencil(readobj_major, in_filename, out_filename):
                     print(f"unknown symbol {symbolName}")
 
 
-        if section_name == ".rela.ltext":
+        if section_name in (".rela.ltext", ".rela.text"):
             for (relkind, target, code_offset, relocation) in relocations_iterator(section["Relocations"], readobj_major):
                 patch = Patch(target, relkind, code_offset)
 
