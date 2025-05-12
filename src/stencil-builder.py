@@ -230,7 +230,7 @@ def generate_stencil(readobj_major, in_filename, out_filename):
                     end = symbol_offset + symbol_size
                     extra_stencils.append(ExtraStencil(symbol_name, data[symbol_offset:end], symbol_offset, end, arch))
                 else:
-                    print(f"unknown symbol {symbolName}")
+                    print(f"unknown symbol {symbol_name}")
 
 
         if section_name in (".rela.ltext", ".rela.text"):
