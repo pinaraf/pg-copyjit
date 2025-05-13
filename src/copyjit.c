@@ -26,7 +26,7 @@ PG_MODULE_MAGIC;
 void _PG_init(void);
 void _PG_fini(void);
 
-#define DEBUG_GEN 0
+#define DEBUG_GEN 1
 #define SHOW_TIME 1
 
 static const char *opcodeNames[] = {
@@ -329,7 +329,7 @@ static void apply_arm64_x26 (CodeGen *codeGen, size_t u32offset, intptr_t target
 	// Now we can code a 26bits delta using the offset between codeGen->code+u32offset and trampoline_address
 	intptr_t current_address = &(codeGen->code.as_u32[u32offset]);
 	int32_t delta = current_address - trampoline_address;
-	if (delta < (1 << 26) && delta > -(1 << 26))
+	if (delta > (1 << 26) || delta < -(1 << 26))
 		elog(WARNING, "Computed delta, %p, from %p to %p, is far too big", delta, current_address, trampoline_address);
 
 	// Force instruction target bits to 0, for safety
@@ -459,8 +459,12 @@ static void apply_jump(CodeGen *codeGen, size_t offset, intptr_t target, const s
 
 static void apply_patch_with_target (CodeGen *codeGen, size_t offset, intptr_t target, const struct Patch *patch)
 {
-	size_t u32offset = offset / 4;
+#if defined(__aarch64__) || defined(_M_ARM64)
+	size_t u32offset = (offset + patch->offset) / 4;
 	uint32_t value;
+#endif
+	if (DEBUG_GEN)
+		elog(WARNING, "Applying a patch at offset %i+%i, target %p, kind %i", offset, patch->offset, target, patch->relkind);
 	switch (patch->relkind) {
 #if defined(__x86_64__)
 		case RELKIND_R_X86_64_64:
@@ -473,19 +477,35 @@ static void apply_patch_with_target (CodeGen *codeGen, size_t offset, intptr_t t
 #if defined(__aarch64__) || defined(_M_ARM64)
 		case RELKIND_R_AARCH64_MOVW_UABS_G0_NC:
 			value = target & 0xFFFF;
+			if (DEBUG_GEN)
+				elog(WARNING, "Patching 0x%08x with value %p (moved to %p)", codeGen->code.as_u32[u32offset], value, value << 5);
 			codeGen->code.as_u32[u32offset] = (codeGen->code.as_u32[u32offset] | (value << 5));
+			if (DEBUG_GEN)
+				elog(WARNING, "Patched 0x%08x with value %p (moved to %p)", codeGen->code.as_u32[u32offset], value, value << 5);
 			break;
 		case RELKIND_R_AARCH64_MOVW_UABS_G1_NC:
 			value = (target & 0xFFFF0000) >> 16;
+			if (DEBUG_GEN)
+				elog(WARNING, "Patching 0x%08x with value %p (moved to %p)", codeGen->code.as_u32[u32offset], value, value << 5);
 			codeGen->code.as_u32[u32offset] = (codeGen->code.as_u32[u32offset] | (value << 5));
+			if (DEBUG_GEN)
+				elog(WARNING, "Patched 0x%08x with value %p (moved to %p)", codeGen->code.as_u32[u32offset], value, value << 5);
 			break;
 		case RELKIND_R_AARCH64_MOVW_UABS_G2_NC:
 			value = (target & 0xFFFF00000000) >> 32;
+			if (DEBUG_GEN)
+				elog(WARNING, "Patching 0x%08x with value %p (moved to %p)", codeGen->code.as_u32[u32offset], value, value << 5);
 			codeGen->code.as_u32[u32offset] = (codeGen->code.as_u32[u32offset] | (value << 5));
+			if (DEBUG_GEN)
+				elog(WARNING, "Patched 0x%08x with value %p (moved to %p)", codeGen->code.as_u32[u32offset], value, value << 5);
 			break;
 		case RELKIND_R_AARCH64_MOVW_UABS_G3:
 			value = (target & 0xFFFF000000000000) >> 48;
+			if (DEBUG_GEN)
+				elog(WARNING, "Patching 0x%08x with value %p (moved to %p)", codeGen->code.as_u32[u32offset], value, value << 5);
 			codeGen->code.as_u32[u32offset] = (codeGen->code.as_u32[u32offset] | (value << 5));
+			if (DEBUG_GEN)
+				elog(WARNING, "Patched 0x%08x with value %p (moved to %p)", codeGen->code.as_u32[u32offset], value, value << 5);
 			break;
 		// These two require trampolines
 		case RELKIND_R_AARCH64_JUMP26:
@@ -646,8 +666,10 @@ copyjit_compile_expr(ExprState *state)
 		if (DEBUG_GEN)
 			elog(WARNING, "Result of mprotect is %i", mprotect_res);
 		state->evalfunc_private = codeGen.code.as_void;
-		state->evalfunc = (ExprStateEvalFunc) codeGen.code.as_void; // When this one starts being usefull, we can bring it back. ExecRunCompiledExpr;
+//		state->evalfunc = (ExprStateEvalFunc) codeGen.code.as_void; // We jump through ExecRunCompiledExpr so we can breakpoint, if needed...
 		state->evalfunc = ExecRunCompiledExpr;
+		if (DEBUG_GEN)
+			elog(WARNING, "Code generated is located at %p for %i bytes (with %i trampolines)", codeGen.code.as_void, codeGen.code_size, required_trampolines);
 	}
 	free(codeGen.offsets);
 	if (codeGen.trampoline_targets)
