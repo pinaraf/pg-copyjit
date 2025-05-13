@@ -566,6 +566,13 @@ copyjit_compile_expr(ExprState *state)
 			neededsize += extra_EEOP_FUNCEXPR_STRICT_int4lt.code_size;
 		} else if (opcode == EEOP_FUNCEXPR_STRICT) {
 			neededsize += stencils[EEOP_FUNCEXPR].code_size + op->d.func.nargs * extra_EEOP_FUNCEXPR_STRICT_CHECKER.code_size;
+		} else if (opcode == EEOP_CONST) {
+			if (DEBUG_GEN)
+				elog(WARNING, "Replacing EEOP_CONST with null/nonnull eeop_const");
+			if (op->d.constval.isnull)
+				neededsize += extra_EEOP_CONST_NULL.code_size;
+			else
+				neededsize += extra_EEOP_CONST_NOTNULL.code_size;
 		} else if (stencils[opcode].code_size == -1) {
 			elog(WARNING, "UNSUPPORTED OPCODE %s", opcodeNames[opcode]);
 			canbuild = false;
@@ -624,6 +631,13 @@ copyjit_compile_expr(ExprState *state)
 				}
 				// Now we can land back on normal func call
 				offset += apply_stencil(&stencils[EEOP_FUNCEXPR], state, &codeGen, offset, next_offset, op);
+			} else if (opcode == EEOP_CONST) {
+				if (DEBUG_GEN)
+					elog(WARNING, "Replacing EEOP_CONST with null/nonnull eeop_const");
+				if (op->d.constval.isnull)
+					offset += apply_stencil(&extra_EEOP_CONST_NULL, state, &codeGen, offset, next_offset, op);
+				else
+					offset += apply_stencil(&extra_EEOP_CONST_NOTNULL, state, &codeGen, offset, next_offset, op);
 			} else {
 				offset += apply_stencil(&stencils[opcode], state, &codeGen, offset, next_offset, op);
 			}
