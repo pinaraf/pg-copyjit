@@ -313,31 +313,38 @@ static void build_aarch64_trampoline(uint32_t *code, intptr_t target)
 
 static void apply_arm64_x26 (CodeGen *codeGen, size_t u32offset, intptr_t target)
 {
-	if (DEBUG_GEN)
-		elog(WARNING, "Asked to create a trampoline targeting %p for offset %p", target, u32offset);
-	uint32_t *trampoline_address = codeGen->code.as_u32 + codeGen->code_size / 4;	// Target the beginning of trampoline area, after code
-	int t;
-	for (t = 0 ; t < codeGen->trampoline_count ; t++) {
-		trampoline_address += (TRAMPOLINE_SIZE / 4);
-		if (codeGen->trampoline_targets[t] == target)
-			break;
-	}
-	if (DEBUG_GEN)
-		elog(WARNING, "=> Going to use trampoline %x, at %p", t, trampoline_address);
-	if (t == codeGen->trampoline_count) {
-		// The target has not yet been 'trampolined', let's do it
-		build_aarch64_trampoline(trampoline_address, target);
-		codeGen->trampoline_targets[t] = target;
-		codeGen->trampoline_count++;
-	}
-	// Now we can code a 26bits delta using the offset between codeGen->code+u32offset and trampoline_address
 	intptr_t current_address = &(codeGen->code.as_u32[u32offset]);
-	int32_t delta = (((intptr_t) trampoline_address) - current_address) /4;
-	if (DEBUG_GEN)
-		elog(WARNING, "=> Delta = %p for %p - %p", delta, trampoline_address, current_address);
-	if (delta > (1 << 26) || delta < -(1 << 26))
-		elog(WARNING, "Computed delta, %p, from %p to %p, is far too big", delta, current_address, trampoline_address);
-
+	uint32_t delta = (target - current_address) / 4;
+	if ((delta < (1 << 26)) && (delta > -(1 << 26))) {
+		if (DEBUG_GEN) {
+			elog(WARNING, "*** Jump does not require a trampoline***");
+			elog(WARNING, "==> Delta = %p for %p - %p", delta, target, current_address);
+		}
+	else {
+		if (DEBUG_GEN)
+			elog(WARNING, "Asked to create a trampoline targeting %p for offset %p", target, u32offset);
+		uint32_t *trampoline_address = codeGen->code.as_u32 + codeGen->code_size / 4;	// Target the beginning of trampoline area, after code
+		int t;
+		for (t = 0 ; t < codeGen->trampoline_count ; t++) {
+			trampoline_address += (TRAMPOLINE_SIZE / 4);
+			if (codeGen->trampoline_targets[t] == target)
+				break;
+		}
+		if (DEBUG_GEN)
+			elog(WARNING, "=> Going to use trampoline %x, at %p", t, trampoline_address);
+		if (t == codeGen->trampoline_count) {
+			// The target has not yet been 'trampolined', let's do it
+			build_aarch64_trampoline(trampoline_address, target);
+			codeGen->trampoline_targets[t] = target;
+			codeGen->trampoline_count++;
+		}
+		// Now we can code a 26bits delta using the offset between codeGen->code+u32offset and trampoline_address
+		delta = (((intptr_t) trampoline_address) - current_address) /4;
+		if (DEBUG_GEN)
+			elog(WARNING, "=> Delta = %p for %p - %p", delta, trampoline_address, current_address);
+		if (delta > (1 << 26) || delta < -(1 << 26))
+			elog(WARNING, "Computed delta, %p, from %p to %p, is far too big", delta, current_address, trampoline_address);
+	}
 	// Force instruction target bits to 0, for safety
 	codeGen->code.as_u32[u32offset] &= 0xFC000000;
 	// Now encode the delta in there
@@ -623,8 +630,8 @@ copyjit_compile_expr(ExprState *state)
 		codeGen.code.as_void = mmap(0, neededsize + required_trampolines * TRAMPOLINE_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
 		if (TRAMPOLINE_SIZE) {
 			codeGen.trampoline_count = 0;
-			codeGen.trampoline_targets = malloc(sizeof(void*) *required_trampolines);
-			memset(codeGen.trampoline_targets, 0, TRAMPOLINE_SIZE * required_trampolines);
+			codeGen.trampoline_targets = malloc(sizeof(void*) * required_trampolines);
+			memset(codeGen.trampoline_targets, 0, sizeof(void*) * required_trampolines);
 		}
 		context->code = codeGen.code.as_void;
 		context->code_size = neededsize + required_trampolines * TRAMPOLINE_SIZE;
