@@ -26,7 +26,7 @@ PG_MODULE_MAGIC;
 void _PG_init(void);
 void _PG_fini(void);
 
-#define DEBUG_GEN 1
+#define DEBUG_GEN 0
 #define SHOW_TIME 1
 
 static const char *opcodeNames[] = {
@@ -313,16 +313,18 @@ static void build_aarch64_trampoline(uint32_t *code, intptr_t target)
 
 static void apply_arm64_x26 (CodeGen *codeGen, size_t u32offset, intptr_t target)
 {
-	uint32_t *beginning_trampoline_area = codeGen->code.as_u32 + codeGen->code_size / 4;
+	if (DEBUG_GEN)
+		elog(WARNING, "Asked to create a trampoline targeting %p for offset %p", target, u32offset);
+	uint32_t *trampoline_address = codeGen->code.as_u32 + codeGen->code_size / 4;	// Target the beginning of trampoline area, after code
 	int t;
 	for (t = 0 ; t < codeGen->trampoline_count ; t++) {
+		trampoline_address += (TRAMPOLINE_SIZE / 4);
 		if (codeGen->trampoline_targets[t] == target)
 			break;
 	}
-	intptr_t trampoline_address = beginning_trampoline_area + t * TRAMPOLINE_SIZE / 4;
+	if (DEBUG_GEN)
+		elog(WARNING, "=> Going to use trampoline %x, at %p", t, trampoline_address);
 	if (t == codeGen->trampoline_count) {
-		t--;
-		trampoline_address -= TRAMPOLINE_SIZE / 4;
 		// The target has not yet been 'trampolined', let's do it
 		build_aarch64_trampoline(trampoline_address, target);
 		codeGen->trampoline_targets[t] = target;
@@ -330,7 +332,9 @@ static void apply_arm64_x26 (CodeGen *codeGen, size_t u32offset, intptr_t target
 	}
 	// Now we can code a 26bits delta using the offset between codeGen->code+u32offset and trampoline_address
 	intptr_t current_address = &(codeGen->code.as_u32[u32offset]);
-	int32_t delta = (trampoline_address - current_address) / 4;
+	int32_t delta = (((intptr_t) trampoline_address) - current_address) /4;
+	if (DEBUG_GEN)
+		elog(WARNING, "=> Delta = %p for %p - %p", delta, trampoline_address, current_address);
 	if (delta > (1 << 26) || delta < -(1 << 26))
 		elog(WARNING, "Computed delta, %p, from %p to %p, is far too big", delta, current_address, trampoline_address);
 
