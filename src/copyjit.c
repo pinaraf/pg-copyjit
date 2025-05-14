@@ -319,8 +319,10 @@ static void apply_arm64_x26 (CodeGen *codeGen, size_t u32offset, intptr_t target
 		if (codeGen->trampoline_targets[t] == target)
 			break;
 	}
-	intptr_t trampoline_address = beginning_trampoline_area + TRAMPOLINE_SIZE / 4;
+	intptr_t trampoline_address = beginning_trampoline_area + t * TRAMPOLINE_SIZE / 4;
 	if (t == codeGen->trampoline_count) {
+		t--;
+		trampoline_address -= TRAMPOLINE_SIZE / 4;
 		// The target has not yet been 'trampolined', let's do it
 		build_aarch64_trampoline(trampoline_address, target);
 		codeGen->trampoline_targets[t] = target;
@@ -328,14 +330,14 @@ static void apply_arm64_x26 (CodeGen *codeGen, size_t u32offset, intptr_t target
 	}
 	// Now we can code a 26bits delta using the offset between codeGen->code+u32offset and trampoline_address
 	intptr_t current_address = &(codeGen->code.as_u32[u32offset]);
-	int32_t delta = current_address - trampoline_address;
+	int32_t delta = (trampoline_address - current_address) / 4;
 	if (delta > (1 << 26) || delta < -(1 << 26))
 		elog(WARNING, "Computed delta, %p, from %p to %p, is far too big", delta, current_address, trampoline_address);
 
 	// Force instruction target bits to 0, for safety
 	codeGen->code.as_u32[u32offset] &= 0xFC000000;
 	// Now encode the delta in there
-	codeGen->code.as_u32[u32offset] &= (delta & ~0xFC000000);
+	codeGen->code.as_u32[u32offset] |= (delta & ~0xFC000000);
 }
 
 #elif defined(__x86_64__)
