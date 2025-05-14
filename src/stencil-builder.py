@@ -51,7 +51,7 @@ typedef struct Patch {
     const uint64_t offset; // Do we need length ?
     const Relkind relkind;
     const Target target;
-    // Is it enough?
+    const uint64_t addend;
 } Patch;
 
 typedef struct Stencil {
@@ -78,16 +78,17 @@ void initialize_stencils() {
 postfix_initializer = "}"
 
 class Patch(object):
-    def __init__ (self, target, kind, offset):
+    def __init__ (self, target, kind, offset, addend):
         self.target = target
         # XXX FIXME this is lazy
         if self.target == "op":
             self.target = "OP"
         self.kind = kind
         self.offset = offset
+        self.addend = addend
 
     def dump_patch(self, out_fd):
-        out_fd.write("{%s, RELKIND_%s, TARGET_%s}," % (self.offset, self.kind, self.target))
+        out_fd.write("{%s, RELKIND_%s, TARGET_%s, %s}," % (self.offset, self.kind, self.target, self.addend))
 
 class Stencil(object):
     def __init__ (self, name, code, start, end, arch):
@@ -194,9 +195,9 @@ def relocations_iterator(relocations, major):
     for relocation in relocations:
         relocation = relocation["Relocation"]
         if major < 15:
-            yield (relocation["Type"]["Value"], relocation["Symbol"]["Value"], relocation["Offset"], relocation)
+            yield (relocation["Type"]["Value"], relocation["Symbol"]["Value"], relocation["Offset"], relocation["Addend"], relocation)
         else:
-            yield (relocation["Type"]["Name"], relocation["Symbol"]["Name"], relocation["Offset"], relocation)
+            yield (relocation["Type"]["Name"], relocation["Symbol"]["Name"], relocation["Offset"], relocation["Addend"], relocation)
 
 def symbols_iterator(symbols, major):
     for symbol in symbols:
@@ -234,8 +235,8 @@ def generate_stencil(readobj_major, in_filename, out_filename):
 
 
         if section_name in (".rela.ltext", ".rela.text"):
-            for (relkind, target, code_offset, relocation) in relocations_iterator(section["Relocations"], readobj_major):
-                patch = Patch(target, relkind, code_offset)
+            for (relkind, target, code_offset, addend, relocation) in relocations_iterator(section["Relocations"], readobj_major):
+                patch = Patch(target, relkind, code_offset, addend)
 
                 # match the patch to a stencil
                 for stencil in stencils + extra_stencils:
