@@ -444,7 +444,7 @@ static intptr_t get_patch_target(ExprState *state, CodeGen *codeGen, size_t next
 			elog(ERROR, "Unsupported target");
 			break;
 	};
-	return target;
+	return target + patch->addend;
 }
 
 static void apply_jump(CodeGen *codeGen, size_t offset, intptr_t target, const struct Patch *patch)
@@ -469,7 +469,6 @@ static void apply_patch_with_target (CodeGen *codeGen, size_t offset, intptr_t t
 	size_t u32offset = (offset + patch->offset) / 4;
 	uint32_t value;
 #endif
-	target += patch->addend;
 	if (DEBUG_GEN)
 		elog(WARNING, "Applying a patch at offset %i+%i, target %p, kind %i", offset, patch->offset, target, patch->relkind);
 	switch (patch->relkind) {
@@ -608,8 +607,9 @@ copyjit_compile_expr(ExprState *state)
 			if (TRAMPOLINE_SIZE) {
 				// Check for patches that require trampolines to be built
 				for (int p = 0 ; p < stencils[opcode].patch_size ; p++) {
-					if (stencils[opcode].patches[p].relkind == RELKIND_R_AARCH64_CALL26)
+					if (stencils[opcode].patches[p].relkind == RELKIND_R_AARCH64_CALL26) {
 						required_trampolines++;
+					}
 				}
 			}
 		}
