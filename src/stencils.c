@@ -38,34 +38,37 @@ extern Datum JUMP_DONE   (struct ExprState *expression, struct ExprContext *econ
 extern Datum JUMP_NULL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
 extern Datum FUNC_CALL   (FunctionCallInfo fcinfo);
 
-Datum stencil_EEOP_DONE (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+#define STENCIL(opcode) Datum stencil_##opcode (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+#define STENCILC(opcode,criteria_id, criteria) const char *selector_stencil_ ##opcode ##_ ##criteria_id = #criteria; Datum stencil_##opcode ##_ ##criteria_id (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+
+STENCIL(EEOP_DONE)
 {
-    *isNull = expression->resnull;
-    return expression->resvalue;
+	*isNull = expression->resnull;
+	return expression->resvalue;
 }
 
-Datum stencil_EEOP_CONST (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCILC(EEOP_CONST, 1, default)
 {
-    *(op.resnull)  = (char) ((intptr_t) &CONST_ISNULL); // op.d.constval.isnull
-    *(op.resvalue) = (Datum) &CONST_VALUE; // op.d.constval.value;
+	*(op.resnull)  = (char) ((intptr_t) &CONST_ISNULL); // op.d.constval.isnull
+	*(op.resvalue) = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
 
-Datum extra_EEOP_CONST_NULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCILC(EEOP_CONST, 2, op->d.constval.isnull)
 {
 	*(op.resnull) = 1;
 	*(op.resvalue) = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
 
-Datum extra_EEOP_CONST_NOTNULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCILC(EEOP_CONST, 3, !op->d.constval.isnull)
 {
 	*(op.resnull) = 0;
 	*(op.resvalue) = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
 
-Datum stencil_EEOP_ASSIGN_TMP (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_ASSIGN_TMP)
 {
 	RESULTSLOT_VALUES = expression->resvalue;
 	RESULTSLOT_ISNULL = expression->resnull;
@@ -73,7 +76,7 @@ Datum stencil_EEOP_ASSIGN_TMP (struct ExprState *expression, struct ExprContext 
 	goto_next;
 }
 
-Datum stencil_EEOP_ASSIGN_TMP_MAKE_RO (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_ASSIGN_TMP_MAKE_RO)
 {
 	RESULTSLOT_ISNULL = expression->resnull;
 	if (!expression->resnull)
@@ -84,7 +87,7 @@ Datum stencil_EEOP_ASSIGN_TMP_MAKE_RO (struct ExprState *expression, struct Expr
 	goto_next;
 }
 
-Datum stencil_EEOP_FUNCEXPR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_FUNCEXPR)
 {
 	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
 	Datum d;
@@ -96,6 +99,8 @@ Datum stencil_EEOP_FUNCEXPR (struct ExprState *expression, struct ExprContext *e
 
 	goto_next;
 }
+
+#if 0
 
 Datum extra_EEOP_FUNCEXPR_STRICT_int4eq (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
@@ -510,3 +515,5 @@ Datum stencil_EEOP_AGG_STRICT_INPUT_CHECK_ARGS (struct ExprState *expression, st
 	}
 	goto_next;
 }
+
+#endif

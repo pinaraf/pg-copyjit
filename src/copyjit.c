@@ -589,6 +589,29 @@ copyjit_compile_expr(ExprState *state)
 
 		codeGen.offsets[opno] = neededsize;
 
+
+		if (stencils[opcode].code_size == -1) {
+			elog(WARNING, "UNSUPPORTED OPCODE %s", opcodeNames[opcode]);
+			canbuild = false;
+		} else {
+			if (stencils[opcode].dispatcher) {
+				opcode = stencils[opcode].dispatcher(op);
+				elog(WARNING, "Dispatching opcode %i (%s) to opcode %i (EEOP_LAST+%i) instead", op->opcode, opcodeNames[op->opcode], opcode, opcode-EEOP_LAST);
+				op->opcode = opcode;
+			}
+			neededsize += stencils[opcode].code_size;
+			if (TRAMPOLINE_SIZE) {
+				// Check for patches that require trampolines to be built
+				for (int p = 0 ; p < stencils[opcode].patch_size ; p++) {
+					if (stencils[opcode].patches[p].relkind == RELKIND_R_AARCH64_CALL26) {
+						required_trampolines++;
+					}
+				}
+			}
+		}
+#if 0
+		// Old manual optimizations!
+
 		if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4eq) {
 			if (DEBUG_GEN)
 				elog(WARNING, "Found a call to int4eq, inlining the hard way!");
@@ -620,6 +643,7 @@ copyjit_compile_expr(ExprState *state)
 				}
 			}
 		}
+#endif
 	}
 
 	// All opcodes are accounted for, we can proceed
@@ -643,7 +667,8 @@ copyjit_compile_expr(ExprState *state)
 			size_t next_offset = codeGen.offsets[opno+1];
 			if (DEBUG_GEN)
 				elog(WARNING, "Adding stencil for %s, op address is %p", opcodeNames[opcode], op);
-
+#if 0
+			// Old manual optimizations!!!
 			if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4eq) {
 				offset += apply_stencil(&extra_EEOP_FUNCEXPR_STRICT_int4eq, state, &codeGen, offset, next_offset, op);
 			} else if (opcode == EEOP_FUNCEXPR_STRICT && op->d.func.fn_addr == &int4lt) {
@@ -673,8 +698,11 @@ copyjit_compile_expr(ExprState *state)
 				else
 					offset += apply_stencil(&extra_EEOP_CONST_NOTNULL, state, &codeGen, offset, next_offset, op);
 			} else {
+#endif
 				offset += apply_stencil(&stencils[opcode], state, &codeGen, offset, next_offset, op);
+#if 0
 			}
+#endif
 		}
 		mprotect_res = mprotect(codeGen.code.as_void, neededsize, PROT_EXEC);
 		if (DEBUG_GEN)
