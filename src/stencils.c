@@ -39,7 +39,7 @@ extern Datum JUMP_NULL   (struct ExprState *expression, struct ExprContext *econ
 extern Datum FUNC_CALL   (FunctionCallInfo fcinfo);
 
 #define STENCIL(opcode) Datum stencil_##opcode (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
-#define STENCILC(opcode,criteria_id, criteria) const char *selector_stencil_ ##opcode ##_ ##criteria_id = #criteria; Datum stencil_##opcode ##_ ##criteria_id (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+#define STENCILC(opcode,criteria_id, criteria) const char *selector_stencil_ ##opcode ##__ ##criteria_id = #criteria; Datum stencil_##opcode ##__ ##criteria_id (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 
 STENCIL(EEOP_DONE)
 {
@@ -100,9 +100,7 @@ STENCIL(EEOP_FUNCEXPR)
 	goto_next;
 }
 
-#if 0
-
-Datum extra_EEOP_FUNCEXPR_STRICT_int4eq (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCILC(EEOP_FUNCEXPR_STRICT, 1, op->d.func.fn_addr == &int4eq)
 {
 	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
 	NullableDatum *args = fcinfo->args;
@@ -116,7 +114,7 @@ Datum extra_EEOP_FUNCEXPR_STRICT_int4eq (struct ExprState *expression, struct Ex
 	goto_next;
 }
 
-Datum extra_EEOP_FUNCEXPR_STRICT_int4lt (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCILC(EEOP_FUNCEXPR_STRICT, 2, op->d.func.fn_addr == &int4lt)
 {
 	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
 	NullableDatum *args = fcinfo->args;
@@ -130,7 +128,7 @@ Datum extra_EEOP_FUNCEXPR_STRICT_int4lt (struct ExprState *expression, struct Ex
 	goto_next;
 }
 
-#if 1
+#if 0
 Datum extra_EEOP_FUNCEXPR_STRICT_CHECKER (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	if (FUNC_ARG.isnull)
@@ -142,8 +140,9 @@ Datum extra_EEOP_FUNCEXPR_STRICT_CHECKER (struct ExprState *expression, struct E
 	}
 	goto_next;
 }
-#else
-Datum stencil_EEOP_FUNCEXPR_STRICT (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+#endif
+
+STENCILC(EEOP_FUNCEXPR_STRICT, 3, default)
 {
 	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
 	NullableDatum *args = fcinfo->args;
@@ -170,8 +169,8 @@ strictfail:
 
 	goto_next;
 }
-#endif
-Datum stencil_EEOP_QUAL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+
+STENCIL(EEOP_QUAL)
 {
 	/* simplified version of BOOL_AND_STEP for use by ExecQual() */
 
@@ -195,19 +194,19 @@ Datum stencil_EEOP_QUAL (struct ExprState *expression, struct ExprContext *econt
 	goto_next;
 }
 
-Datum stencil_EEOP_SQLVALUEFUNCTION (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_SQLVALUEFUNCTION)
 {
 	ExecEvalSQLValueFunction(expression, &op);
 	goto_next;
 }
 
-Datum stencil_EEOP_SCAN_SYSVAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_SCAN_SYSVAR)
 {
 	ExecEvalSysVar(expression, &op, econtext, econtext->ecxt_scantuple);
 	goto_next;
 }
 
-Datum stencil_EEOP_SCAN_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_SCAN_VAR)
 {
 	TupleTableSlot *scanslot = econtext->ecxt_scantuple;
 
@@ -217,7 +216,7 @@ Datum stencil_EEOP_SCAN_VAR (struct ExprState *expression, struct ExprContext *e
 	goto_next;
 }
 
-Datum stencil_EEOP_SCAN_FETCHSOME (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_SCAN_FETCHSOME)
 {
 	TupleTableSlot * scanslot = econtext->ecxt_scantuple;
 
@@ -227,7 +226,7 @@ Datum stencil_EEOP_SCAN_FETCHSOME (struct ExprState *expression, struct ExprCont
 	goto_next;
 }
 
-Datum stencil_EEOP_INNER_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_INNER_VAR)
 {
 	TupleTableSlot *innerslot = econtext->ecxt_innertuple;
 
@@ -237,7 +236,7 @@ Datum stencil_EEOP_INNER_VAR (struct ExprState *expression, struct ExprContext *
 	goto_next;
 }
 
-Datum stencil_EEOP_INNER_FETCHSOME (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_INNER_FETCHSOME)
 {
 	TupleTableSlot * innerslot = econtext->ecxt_innertuple;
 
@@ -247,7 +246,7 @@ Datum stencil_EEOP_INNER_FETCHSOME (struct ExprState *expression, struct ExprCon
 	goto_next;
 }
 
-Datum stencil_EEOP_OUTER_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_OUTER_VAR)
 {
 	TupleTableSlot *outerslot = econtext->ecxt_outertuple;
 
@@ -258,7 +257,7 @@ Datum stencil_EEOP_OUTER_VAR (struct ExprState *expression, struct ExprContext *
 	goto_next;
 }
 
-Datum stencil_EEOP_OUTER_FETCHSOME (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_OUTER_FETCHSOME)
 {
 	TupleTableSlot * outerslot = econtext->ecxt_outertuple;
 
@@ -268,7 +267,7 @@ Datum stencil_EEOP_OUTER_FETCHSOME (struct ExprState *expression, struct ExprCon
 	goto_next;
 }
 
-Datum stencil_EEOP_ASSIGN_SCAN_VAR (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+STENCIL(EEOP_ASSIGN_SCAN_VAR)
 {
 	TupleTableSlot *scanslot = econtext->ecxt_scantuple;
 
@@ -282,6 +281,8 @@ Datum stencil_EEOP_ASSIGN_SCAN_VAR (struct ExprState *expression, struct ExprCon
 	goto_next;
 }
 
+
+#if 0
 Datum stencil_EEOP_NULLTEST_ISNULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	*op.resvalue = BoolGetDatum(*op.resnull);

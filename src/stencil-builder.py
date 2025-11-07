@@ -271,7 +271,7 @@ def generate_stencil(readobj_major, in_filename, out_filename):
         rela_ldata = sections_dict['.rela.ldata']
         # each symbol is a selector for a stencil
         print("Iterating symbols for selectors")
-        name_regex = re.compile(r"^selector_stencil_(.*)_(\d+)$")
+        name_regex = re.compile(r"^selector_stencil_(.*)__(\d+)$")
         selector_offset = 0
         for (symbol_name, symbol_offset, symbol_size, symbol) in symbols_iterator(section["Symbols"], readobj_major):
             print(f"Got symbol {symbol_name} for selectors")
@@ -299,8 +299,7 @@ def generate_stencil(readobj_major, in_filename, out_filename):
                 stencil_selectors[stencil_name][selector_id] = {"code": selector_code, "global_id": global_id}
                 # must modify the corresponding stencil to let it know it's not a normal one
                 for stencil in stencils:
-                    if stencil.name == stencil_name + "_" + str(selector_id):
-                        print("FOUND IT")
+                    if stencil.name == stencil_name + "__" + str(selector_id):
                         stencil.reassigned_id = f"EEOP_LAST+{global_id}"
                 selectors_only_stencils.add(stencil_name)
             selector_offset += 1
