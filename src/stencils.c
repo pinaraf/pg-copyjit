@@ -32,12 +32,14 @@ extern NullableDatum FUNC_ARG;
 
 extern ExprEvalStep op;
 
+extern Datum FUNC_CALL   (FunctionCallInfo fcinfo);
+
 extern Datum FORCE_NEXT_CALL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
 extern Datum NEXT_CALL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
 extern Datum JUMP_DONE   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
 extern Datum JUMP_NULL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
-extern Datum FUNC_CALL   (FunctionCallInfo fcinfo);
 
+#define GOTO(target) target(expression, econtext, isNull)
 #define STENCIL(opcode) Datum stencil_##opcode (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 #define STENCILC(opcode,criteria_id, criteria) const char *selector_stencil_ ##opcode ##__ ##criteria_id = #criteria; Datum stencil_##opcode ##__ ##criteria_id (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 
