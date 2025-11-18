@@ -11,8 +11,9 @@
 
 #include "utils/expandeddatum.h"
 #include "utils/memutils.h"
+#if PG_VERSION_NUM < 180000
 #include "utils/resowner_private.h"
-
+#endif
 
 #define goto_next __attribute__((musttail)) return NEXT_CALL(expression, econtext, isNull)
 
@@ -43,18 +44,31 @@ extern Datum JUMP_NULL   (struct ExprState *expression, struct ExprContext *econ
 #define STENCIL(opcode) Datum stencil_##opcode (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 #define STENCILC(opcode,criteria_id, criteria) const char *selector_stencil_ ##opcode ##__ ##criteria_id = #criteria; Datum stencil_##opcode ##__ ##criteria_id (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 
+/// #define VARIANT(real_opcode,variant_id) real_opcode ##__ ##criteria_id
+/// #define SELECTOR(stencil,criteria) const char *selector_stencil_ ##stencil = #criteria;
+
+//////////////////////////////////////
+///           EEOP_DONE            ///
+//////////////////////////////////////
+
 STENCIL(EEOP_DONE)
 {
 	*isNull = expression->resnull;
 	return expression->resvalue;
 }
 
-STENCILC(EEOP_CONST, 1, default)
+//////////////////////////////////////
+///           EEOP_CONST           ///
+//////////////////////////////////////
+
+STENCIL(EEOP_CONST)
 {
 	*(op.resnull)  = (char) ((intptr_t) &CONST_ISNULL); // op.d.constval.isnull
 	*(op.resvalue) = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
+// STENCIL(VARIANT(EEOP_CONST, 1))
+// SELECTOR(VARIANT(EEOP_CONST, 1), default)
 
 STENCILC(EEOP_CONST, 2, op->d.constval.isnull)
 {
@@ -69,6 +83,10 @@ STENCILC(EEOP_CONST, 3, !op->d.constval.isnull)
 	*(op.resvalue) = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
+
+//////////////////////////////////////
+///        EEOP_ASSIGN_TMP         ///
+//////////////////////////////////////
 
 STENCIL(EEOP_ASSIGN_TMP)
 {

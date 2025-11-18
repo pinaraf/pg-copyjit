@@ -594,8 +594,8 @@ copyjit_compile_expr(ExprState *state)
 			elog(WARNING, "UNSUPPORTED OPCODE %s", opcodeNames[opcode]);
 			canbuild = false;
 		} else {
-			if (stencils[opcode].dispatcher) {
-				opcode = stencils[opcode].dispatcher(op);
+			int new_opcode = dispatch_opcode(op);
+			if (new_opcode != op->opcode) {
 				elog(WARNING, "Dispatching opcode %i (%s) to opcode %i (EEOP_LAST+%i) instead", op->opcode, opcodeNames[op->opcode], opcode, opcode-EEOP_LAST);
 				op->opcode = opcode;
 			}

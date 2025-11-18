@@ -62,7 +62,6 @@ typedef struct Stencil {
     const unsigned char *code;
     size_t patch_size;
     const Patch *patches;
-    DispatcherFunction dispatcher;
 } Stencil;
 
 """
@@ -223,7 +222,7 @@ def generate_stencil(readobj_major, in_filename, out_filename):
     print(stencils_o.keys())
     arch = stencils_o["FileSummary"]["Arch"]
     stencils = []
-    selectors_only_stencils = set()
+    ## selectors_only_stencils = set()
     extra_stencils = []
     stencil_selectors = {}  # stencil name => {selector id => selector info, varying type...}
 
@@ -265,7 +264,6 @@ def generate_stencil(readobj_major, in_filename, out_filename):
                     raise Exception("Patch not matched to a stencil")
 
     global_id = 0
-    selector_functions = []
     if '.ldata' in sections_dict:
         section = sections_dict['.ldata']
         rela_ldata = sections_dict['.rela.ldata']
@@ -301,30 +299,30 @@ def generate_stencil(readobj_major, in_filename, out_filename):
                 for stencil in stencils:
                     if stencil.name == stencil_name + "__" + str(selector_id):
                         stencil.reassigned_id = f"EEOP_LAST+{global_id}"
-                selectors_only_stencils.add(stencil_name)
+                ## selectors_only_stencils.add(stencil_name)
             selector_offset += 1
         print(stencil_selectors)
-        # now we must generate appropriate functions
-        for (stencil_name, selectors) in stencil_selectors.items():
-            new_function = f"int select_target_{stencil_name}(ExprEvalStep *op) {{\n"
-            default_id = None
-            for selector in selectors.keys():
-                # must make sure default is last
-                if selectors[selector]["code"] == "default":
-                    default_id = selector
-                    continue
-                new_function += f"    if ({selectors[selector]['code']}) return EEOP_LAST+{selectors[selector]['global_id']};\n"
-            if default_id is not None:
-                new_function += f"    else return EEOP_LAST+{selectors[default_id]['global_id']};\n"
-            new_function += "}\n"
-            selector_functions.append(new_function)
 
     with open(out_filename, "w") as out_fd:
         out_fd.write(prefix)
 
         out_fd.write(f"\nStencil stencils[EEOP_LAST+{global_id+1}];\n")
 
-        out_fd.write("\n".join(selector_functions))
+        out_fd.write("\nint dispatch_opcode(ExprEvalStep *op) {\n")
+        out_fd.write("switch(op->opcode) {\n")
+        for (stencil_name, selectors) in stencil_selectors.items():
+            out_fd.write(f"    case {stencil_name}:\n")
+            default_id = None
+            for selector in selectors.keys():
+                # must make sure default is last
+                if selectors[selector]["code"] == "default":
+                    default_id = selector
+                    continue
+                out_fd.write(f"        if ({selectors[selector]['code']}) return EEOP_LAST+{selectors[selector]['global_id']};\n")
+            if default_id is not None:
+                out_fd.write(f"        else return EEOP_LAST+{selectors[default_id]['global_id']};\n")
+        out_fd.write("    default: return op->opcode;\n")
+        out_fd.write("}\n")
 
         for stencil in stencils + extra_stencils:
             stencil.strip_code()
@@ -335,8 +333,8 @@ def generate_stencil(readobj_major, in_filename, out_filename):
         out_fd.write(prefix_initializer)
         for stencil in stencils:
             stencil.dump_initializer(out_fd)
-        for stencil in selectors_only_stencils:
-            out_fd.write(f"stencils[{stencil}].dispatcher = select_target_{stencil}; stencils[{stencil}].code_size = 0;")
+        ##for stencil in selectors_only_stencils:
+        ##    out_fd.write(f"stencils[{stencil}].dispatcher = select_target_{stencil}; stencils[{stencil}].code_size = 0;")
         out_fd.write(postfix_initializer)
         for extra in extra_stencils:
             extra.dump_initializer(out_fd)
