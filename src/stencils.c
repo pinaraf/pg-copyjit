@@ -15,7 +15,12 @@
 #include "utils/resowner_private.h"
 #endif
 
-#define goto_next __attribute__((musttail)) return NEXT_CALL(expression, econtext, isNull)
+#define REGISTER_DEFINITION char nullFlags, intptr_t reg0, intptr_t reg1
+#define REGISTER_PASS nullFlags, reg0, reg1
+
+#define SET_REGISTER_VALUE(id,value)
+
+#define goto_next __attribute__((musttail)) return NEXT_CALL(expression, econtext, isNull, REGISTER_PASS)
 
 /*
  * Note : using the ghccc ABI implies calling only functions sharing this ABI.
@@ -35,17 +40,17 @@ extern ExprEvalStep op;
 
 extern Datum FUNC_CALL   (FunctionCallInfo fcinfo);
 
-extern Datum FORCE_NEXT_CALL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
-extern Datum NEXT_CALL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
-extern Datum JUMP_DONE   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
-extern Datum JUMP_NULL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull);
+extern Datum FORCE_NEXT_CALL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull, REGISTER_DEFINITION);
+extern Datum NEXT_CALL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull, REGISTER_DEFINITION);
+extern Datum JUMP_DONE   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull, REGISTER_DEFINITION);
+extern Datum JUMP_NULL   (struct ExprState *expression, struct ExprContext *econtext, bool *isNull, REGISTER_DEFINITION);
 
-#define GOTO(target) target(expression, econtext, isNull)
-#define STENCIL(opcode) Datum stencil_##opcode (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
-#define STENCILC(opcode,criteria_id, criteria) const char *selector_stencil_ ##opcode ##__ ##criteria_id = #criteria; Datum stencil_##opcode ##__ ##criteria_id (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
+#define GOTO(target) target(expression, econtext, isNull, REGISTER_PASS)
+#define STENCIL(opcode) Datum stencil_##opcode (struct ExprState *expression, struct ExprContext *econtext, bool *isNull, REGISTER_DEFINITION)
+#define STENCILC(opcode,criteria_id,criteria) const char *selector_stencil_ ##opcode ##__ ##criteria_id = #criteria; Datum stencil_##opcode ##__ ##criteria_id (struct ExprState *expression, struct ExprContext *econtext, bool *isNull, REGISTER_DEFINITION)
 
 /// #define VARIANT(real_opcode,variant_id) real_opcode ##__ ##criteria_id
-/// #define SELECTOR(stencil,criteria) const char *selector_stencil_ ##stencil = #criteria;
+#define SELECTOR(stencil,criteria) const char *selector_stencil_ ##stencil = #criteria;
 
 //////////////////////////////////////
 ///           EEOP_DONE            ///
@@ -67,22 +72,22 @@ STENCIL(EEOP_CONST)
 	*(op.resvalue) = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
-// STENCIL(VARIANT(EEOP_CONST, 1))
-// SELECTOR(VARIANT(EEOP_CONST, 1), default)
 
-STENCILC(EEOP_CONST, 2, op->d.constval.isnull)
+STENCIL(EEOP_CONST__1)
 {
 	*(op.resnull) = 1;
 	*(op.resvalue) = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
+SELECTOR(EEOP_CONST__1, op->d.constval.isnull)
 
-STENCILC(EEOP_CONST, 3, !op->d.constval.isnull)
+STENCIL(EEOP_CONST__2)
 {
 	*(op.resnull) = 0;
 	*(op.resvalue) = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
+SELECTOR(EEOP_CONST__2, !op->d.constval.isnull)
 
 //////////////////////////////////////
 ///        EEOP_ASSIGN_TMP         ///
@@ -96,6 +101,11 @@ STENCIL(EEOP_ASSIGN_TMP)
 	goto_next;
 }
 
+
+//////////////////////////////////////
+///    EEOP_ASSIGN_TMP_MAKE_RO     ///
+//////////////////////////////////////
+
 STENCIL(EEOP_ASSIGN_TMP_MAKE_RO)
 {
 	RESULTSLOT_ISNULL = expression->resnull;
@@ -106,6 +116,11 @@ STENCIL(EEOP_ASSIGN_TMP_MAKE_RO)
 
 	goto_next;
 }
+
+
+//////////////////////////////////////
+///        EEOP_FUNCEXPR           ///
+//////////////////////////////////////
 
 STENCIL(EEOP_FUNCEXPR)
 {
@@ -120,7 +135,12 @@ STENCIL(EEOP_FUNCEXPR)
 	goto_next;
 }
 
-STENCILC(EEOP_FUNCEXPR_STRICT, 1, op->d.func.fn_addr == &int4eq)
+
+//////////////////////////////////////
+///      EEOP_FUNCEXPR_STRICT      ///
+//////////////////////////////////////
+
+STENCIL(EEOP_FUNCEXPR_STRICT__1)
 {
 	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
 	NullableDatum *args = fcinfo->args;
@@ -133,8 +153,9 @@ STENCILC(EEOP_FUNCEXPR_STRICT, 1, op->d.func.fn_addr == &int4eq)
 	}
 	goto_next;
 }
+SELECTOR(EEOP_FUNCEXPR_STRICT__1, op->d.func.fn_addr == &int4eq)
 
-STENCILC(EEOP_FUNCEXPR_STRICT, 2, op->d.func.fn_addr == &int4lt)
+STENCIL(EEOP_FUNCEXPR_STRICT__2)
 {
 	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
 	NullableDatum *args = fcinfo->args;
@@ -147,6 +168,7 @@ STENCILC(EEOP_FUNCEXPR_STRICT, 2, op->d.func.fn_addr == &int4lt)
 	}
 	goto_next;
 }
+SELECTOR(EEOP_FUNCEXPR_STRICT__2, op->d.func.fn_addr == &int4lt)
 
 #if 0
 Datum extra_EEOP_FUNCEXPR_STRICT_CHECKER (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
@@ -162,7 +184,7 @@ Datum extra_EEOP_FUNCEXPR_STRICT_CHECKER (struct ExprState *expression, struct E
 }
 #endif
 
-STENCILC(EEOP_FUNCEXPR_STRICT, 3, default)
+STENCIL(EEOP_FUNCEXPR_STRICT)
 {
 	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
 	NullableDatum *args = fcinfo->args;
@@ -203,7 +225,7 @@ STENCIL(EEOP_QUAL)
 		*op.resvalue = BoolGetDatum(false);
 
 		__attribute__((musttail))
-		return JUMP_DONE(expression, econtext, isNull);
+		return JUMP_DONE(expression, econtext, isNull, REGISTER_PASS);
 	}
 
 	/*
