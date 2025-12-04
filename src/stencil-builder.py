@@ -38,6 +38,8 @@ typedef enum Target {
     TARGET_JUMP_NULL,
     TARGET_RESULTSLOT_VALUES,
     TARGET_RESULTSLOT_ISNULL,
+    TARGET_REGISTER_ISNULL,
+    TARGET_REGISTER_VALUE,
     TARGET_MakeExpandedObjectReadOnlyInternal,  // TODO : replace this and followings with a TARGET_FUNCTION_CALL and a Patch::function_name ?
     TARGET_slot_getsomeattrs_int,
     TARGET_ExecEvalScalarArrayOp,               // TODO : used as is, should be reimplemented but I wanted to show it can be quick this way
@@ -48,6 +50,8 @@ typedef enum Target {
     TARGET_CurrentMemoryContext,
 } Target;
 
+typedef void (*RegisterContractFunction)(ExprState *expression, ExprEvalStep *op, void *context);
+
 typedef struct Patch {
     const uint64_t offset; // Do we need length ?
     const Relkind relkind;
@@ -55,13 +59,12 @@ typedef struct Patch {
     const uint64_t addend;
 } Patch;
 
-typedef int (*DispatcherFunction)(ExprEvalStep *op);
-
 typedef struct Stencil {
     size_t code_size;
     const unsigned char *code;
     size_t patch_size;
     const Patch *patches;
+    RegisterContractFunction registers_contract;
 } Stencil;
 
 """
@@ -92,6 +95,8 @@ class Patch(object):
         out_fd.write("{%s, RELKIND_%s, TARGET_%s, %s}," % (self.offset, self.kind, self.target, self.addend))
 
 class Stencil(object):
+    eeop_last_offset = 1
+
     def __init__ (self, name, code, start, end, arch):
         self.name = name
         self.code = code
@@ -100,6 +105,13 @@ class Stencil(object):
         self.arch = arch
         self.patches = []
         self.reassigned_id = None
+        self.registers_contract = None
+        if self.name.startswith("extra_"):
+            self.mark_extra()
+
+    def mark_extra(self):
+        self.reassigned_id = f"EEOP_LAST+{Stencil.eeop_last_offset}"
+        Stencil.eeop_last_offset += 1
 
     def add_patch(self, patch):
         self.patches.append(patch)
@@ -143,7 +155,7 @@ class Stencil(object):
         # first, try to get rid of final next_call
         self._strip_final_next_call()
         # and now for specific optimizations
-        if self.arch == "x86_64":
+        if self.arch == "x86_64" and False:
             # now, try to find out a movabs XX, %rax ; jmp *%rax sequence
             mov_and_jmp = b"\x48\xb8\x00\x00\x00\x00\x00\x00\x00\x00\xff\xe0"
             patch_offset = 2
@@ -171,6 +183,31 @@ class Stencil(object):
                 patch.dump_patch(out_fd)
             out_fd.write("};\n")
 
+    def dump_globals(self, out_fd):
+        self.dump_code(out_fd)
+        self.dump_patches(out_fd)
+        self.dump_registers_contract(out_fd)
+        if self.name.startswith("extra_"):
+            out_fd.write(f"const unsigned int {self.name}__opcode = {self.reassigned_id};\n")
+
+    def dump_registers_contract(self, out_fd):
+        if self.registers_contract is None:
+            return
+
+        out_fd.write("void stencil_registers_contract__%s(ExprState *expression, ExprEvalStep *op, void *context) {\n" % self.name)
+        # Now we must play. Parsing it here, it's a bit late, but good enough for the PoC
+        line_fcinfo_re = re.compile("^EXPECT_FCINFO (.*)$")
+        line_memory_re = re.compile("^(EXPECT|WRITE) in (-?[0-9]+) null:(.*) value:(.*)$")
+        for line in self.registers_contract.strip().splitlines():
+            if m := line_fcinfo_re.match(line):
+                out_fd.write("  copyjit_register_fcinfo_access(%s, context);\n" % m.groups()[0])
+            elif m := line_memory_re.match(line):
+                if m.groups()[0] == "EXPECT":
+                    out_fd.write("  copyjit_register_memory_read_access(%s, %s, %s, context);\n" % (m.groups()[1], m.groups()[2], m.groups()[3]))
+                if m.groups()[0] == "WRITE":
+                    out_fd.write("  copyjit_register_memory_write_access(%s, %s, %s, context);\n" % (m.groups()[1], m.groups()[2], m.groups()[3]))
+        out_fd.write("}\n")
+
     def dump_initializer(self, out_fd):
         name_in_c = self.name
         if self.reassigned_id is not None:
@@ -181,6 +218,10 @@ class Stencil(object):
         else:
             out_fd.write("stencils[%s].code_size = %s; stencils[%s].code = %s__code;\n" % (name_in_c, len(self.code), name_in_c, self.name))
             out_fd.write("stencils[%s].patch_size = %s; stencils[%s].patches = %s__patches;\n" % (name_in_c, len(self.patches), name_in_c, self.name))
+        if self.registers_contract is not None:
+            out_fd.write("stencils[%s].registers_contract = &stencil_registers_contract__%s;\n" % (name_in_c, self.name))
+        else:
+            out_fd.write("stencils[%s].registers_contract = NULL;\n" % name_in_c)
         out_fd.write(f"// End of code for {self.name}\n\n")
 
 class ExtraStencil(Stencil):
@@ -223,7 +264,6 @@ def generate_stencil(readobj_major, in_filename, out_filename):
     arch = stencils_o["FileSummary"]["Arch"]
     stencils = []
     ## selectors_only_stencils = set()
-    extra_stencils = []
     stencil_selectors = {}  # stencil name => {selector id => selector info, varying type...}
 
     sections_dict = {}
@@ -244,7 +284,9 @@ def generate_stencil(readobj_major, in_filename, out_filename):
                 elif symbol_name.startswith("extra_"):
                     print("iterating symbols => extra")
                     end = symbol_offset + symbol_size
-                    extra_stencils.append(ExtraStencil(symbol_name, data[symbol_offset:end], symbol_offset, end, arch))
+                    stencil = Stencil(symbol_name, data[symbol_offset:end], symbol_offset, end, arch)
+                    stencil.mark_extra()
+                    stencils.append(stencil)
                 else:
                     print(f"unknown symbol {symbol_name}")
 
@@ -256,27 +298,26 @@ def generate_stencil(readobj_major, in_filename, out_filename):
                 patch = Patch(target, relkind, code_offset, addend)
 
                 # match the patch to a stencil
-                for stencil in stencils + extra_stencils:
+                for stencil in stencils:
                     if stencil.start <= patch.offset and stencil.end > patch.offset:
                         stencil.add_patch(patch)
                         break
                 else:
                     raise Exception("Patch not matched to a stencil")
 
-    global_id = 0
     if '.ldata' in sections_dict:
         section = sections_dict['.ldata']
         rela_ldata = sections_dict['.rela.ldata']
-        # each symbol is a selector for a stencil
+        # each symbol is a selector or a register contract for a stencil
         print("Iterating symbols for selectors")
-        name_regex = re.compile(r"^selector_stencil_(.*)__(\d+)$")
+        selector_name_regex = re.compile(r"^selector_stencil_(.*)__(.+)$")
+        register_contract_regex = re.compile(r"^register_contract_(.*)$")
         selector_offset = 0
         for (symbol_name, symbol_offset, symbol_size, symbol) in symbols_iterator(section["Symbols"], readobj_major):
-            print(f"Got symbol {symbol_name} for selectors")
-            if m := name_regex.match(symbol_name):
+            print(f"Got symbol {symbol_name} for selectors/contracts")
+            if m := selector_name_regex.match(symbol_name):
                 print(m.groups())
                 stencil_name, selector_id = m.groups()
-                selector_id = int(selector_id)
                 if not stencil_name in stencil_selectors:
                     stencil_selectors[stencil_name] = {}
                 assert selector_id not in stencil_selectors[stencil_name]
@@ -284,7 +325,6 @@ def generate_stencil(readobj_major, in_filename, out_filename):
                 # Now we must go to .rela.ldata to get some infos
                 matching_reloc = rela_ldata['Relocations'][selector_offset]['Relocation']
                 print(matching_reloc)
-                ## {'Offset': 8, 'Type': {'Name': 'R_X86_64_64', 'Value': 1}, 'Symbol': {'Name': '.rodata.str1.1', 'Value': 2}, 'Addend': 8}
                 reloc_section = sections_dict[matching_reloc['Symbol']['Name']]
 
                 # Now extract from SectionData to stencil_selectors, easy peasy
@@ -293,51 +333,68 @@ def generate_stencil(readobj_major, in_filename, out_filename):
                 while reloc_section["SectionData"]["Bytes"][i] != 0:
                     selector_code += chr(reloc_section["SectionData"]["Bytes"][i])
                     i += 1
-                global_id += 1
-                stencil_selectors[stencil_name][selector_id] = {"code": selector_code, "global_id": global_id}
                 # must modify the corresponding stencil to let it know it's not a normal one
                 for stencil in stencils:
                     if stencil.name == stencil_name + "__" + str(selector_id):
-                        stencil.reassigned_id = f"EEOP_LAST+{global_id}"
-                ## selectors_only_stencils.add(stencil_name)
+                        stencil.mark_extra()
+                        stencil_selectors[stencil_name][selector_id] = {"code": selector_code, "stencil": stencil}
+            elif m := register_contract_regex.match(symbol_name):
+                stencil_name = m.groups()[0]
+                print(m.groups())
+
+                # Now we must go to .rela.ldata to get some infos
+                matching_reloc = rela_ldata['Relocations'][selector_offset]['Relocation']
+                print(matching_reloc)
+                reloc_section = sections_dict[matching_reloc['Symbol']['Name']]
+                # Now extract from SectionData to stencil_selectors, easy peasy
+                contract_content = ""
+                i = matching_reloc['Addend']
+                while reloc_section["SectionData"]["Bytes"][i] != 0:
+                    contract_content += chr(reloc_section["SectionData"]["Bytes"][i])
+                    i += 1
+                print(contract_content)
+                for stencil in stencils:
+                    if stencil.name == stencil_name:
+                        stencil.registers_contract = contract_content
+
             selector_offset += 1
         print(stencil_selectors)
 
     with open(out_filename, "w") as out_fd:
         out_fd.write(prefix)
 
-        out_fd.write(f"\nStencil stencils[EEOP_LAST+{global_id+1}];\n")
+        out_fd.write(f"\nStencil stencils[EEOP_LAST+{Stencil.eeop_last_offset}];\n")
 
         out_fd.write("\nint dispatch_opcode(ExprEvalStep *op) {\n")
         out_fd.write("switch(op->opcode) {\n")
         for (stencil_name, selectors) in stencil_selectors.items():
             out_fd.write(f"    case {stencil_name}:\n")
             default_id = None
+            print(selectors)
             for selector in selectors.keys():
                 # must make sure default is last
                 if selectors[selector]["code"] == "default":
-                    default_id = selector
-                    continue
-                out_fd.write(f"        if ({selectors[selector]['code']}) return EEOP_LAST+{selectors[selector]['global_id']};\n")
+                   default_id = selector
+                   continue
+                print(f"==> default_id = {default_id}")
+                out_fd.write(f"        if ({selectors[selector]['code']}) return {selectors[selector]['stencil'].reassigned_id};\n")
             if default_id is not None:
-                out_fd.write(f"        else return EEOP_LAST+{selectors[default_id]['global_id']};\n")
+                out_fd.write(f"        else return {selectors[default_id]['stencil'].reassigned_id};\n")
+            else:
+                out_fd.write(f"        else return {stencil_name};\n")
         out_fd.write("    default: return op->opcode;\n")
+        out_fd.write("  }\n")
         out_fd.write("}\n")
 
-        for stencil in stencils + extra_stencils:
+        for stencil in stencils:
             stencil.strip_code()
-            stencil.dump_code(out_fd)
-            stencil.dump_patches(out_fd)
+            stencil.dump_globals(out_fd)
 
 
         out_fd.write(prefix_initializer)
         for stencil in stencils:
             stencil.dump_initializer(out_fd)
-        ##for stencil in selectors_only_stencils:
-        ##    out_fd.write(f"stencils[{stencil}].dispatcher = select_target_{stencil}; stencils[{stencil}].code_size = 0;")
         out_fd.write(postfix_initializer)
-        for extra in extra_stencils:
-            extra.dump_initializer(out_fd)
 
 if __name__ == "__main__":
     # args readobj-version source.json target.c

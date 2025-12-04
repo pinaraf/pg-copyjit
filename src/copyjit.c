@@ -14,10 +14,116 @@
 #include "utils/expandeddatum.h"
 #include "utils/fmgrprotos.h"
 
+#include <stdio.h>
 #include <sys/mman.h>
+#include <errno.h>
+
+
+#define DEBUG_GEN 0
+#define SHOW_TIME 1
 
 void initialize_stencils();
 void copyjit_reset_after_error(void);
+
+/** Registers contract "API" **/
+
+#define REG_COUNT 2
+
+typedef struct LostVariable {
+	void *isnull;
+	void *value;
+	int build_step_id;
+} LostVariable;
+
+typedef struct RegisterContent {
+	void *isnull;
+	void *value;
+} RegisterContent;
+
+typedef struct FillRequest {
+	void *isnull;
+	void *value;
+} FillRequest;
+
+typedef struct CurrentState {
+	RegisterContent registers[REG_COUNT];
+	LostVariable lost_variables[100];
+	int lost_variable_count;
+	int current_build_step_id;
+	FillRequest fill_requests[REG_COUNT];
+} CurrentState;
+
+void copyjit_register_fcinfo_access(void *fcinfo, CurrentState *context) {
+	elog(ERROR, "Checking a fcinfo contract, not implemented !");
+}
+
+void copyjit_register_memory_read_access(char register_id, void *isnull, void *value, CurrentState *context) {
+	if (DEBUG_GEN)
+		elog(INFO, "Checking a memory read contract for register %i", register_id);
+	if (register_id < 0) {
+		/* Check all registers, if they had this adress, we must spill them */
+		for (int reg_id = 0 ; reg_id < REG_COUNT ; reg_id++) {
+			if ((context->registers[reg_id].isnull == isnull) && (context->registers[reg_id].value == value)) {
+				elog(ERROR, "Need to spill register %i", reg_id);
+			}
+		}
+		/* Check if the variable was previously lost, if so, bring it back to live */
+		for (int lost_var = 0 ; lost_var < context->lost_variable_count ; lost_var++) {
+			if ((context->lost_variables[lost_var].isnull == isnull) && (context->lost_variables[lost_var].value == value)) {
+				elog(ERROR, "Need to resurrect a lost variable !");
+			}
+		}
+		/* Else nothing to do */
+	} else {
+		if (context->registers[register_id].isnull == isnull && context->registers[register_id].value == value) {
+			if (DEBUG_GEN)
+				elog(INFO, "Contract ok for register %i, continue !", register_id);
+		} else {
+			// Check if it is in a lost variable
+			for (int lost_var = 0 ; lost_var < context->lost_variable_count ; lost_var++) {
+				if ((context->lost_variables[lost_var].isnull == isnull) && (context->lost_variables[lost_var].value == value)) {
+					elog(ERROR, "Need to resurrect a lost variable !");
+				}
+			}
+			if (DEBUG_GEN)
+				elog(INFO, "Need to inject a fill register in %i, current is %p/%p, need %p/%p", register_id, context->registers[register_id].isnull, context->registers[register_id].value, isnull, value);
+			context->registers[register_id].isnull = isnull;
+			context->registers[register_id].value = value;
+			context->fill_requests[register_id].isnull = isnull;
+			context->fill_requests[register_id].value = value;
+		}
+	}
+}
+
+void copyjit_register_memory_write_access(char register_id, void *isnull, void *value, CurrentState *context) {
+	if (DEBUG_GEN)
+		elog(INFO, "Checking a memory write contract for register %i", register_id);
+
+	if (register_id < 0) {
+		/* Check all registers, if they had this adress, we must empty them */
+		for (int reg_id = 0 ; reg_id < REG_COUNT ; reg_id++) {
+			if ((context->registers[reg_id].isnull == isnull) && (context->registers[reg_id].value == value)) {
+				if (DEBUG_GEN)
+					elog(INFO, "Flushing register %i", reg_id);
+				context->registers[reg_id].isnull = NULL;
+				context->registers[reg_id].value = NULL;
+			}
+		}
+	} else {
+		if (context->registers[register_id].isnull != NULL) {
+			if (DEBUG_GEN)
+				elog(INFO, "Register %i contains a variable that is now lost, save it", register_id);
+			LostVariable *newLost = &(context->lost_variables[context->lost_variable_count]);
+			newLost->isnull = context->registers[register_id].isnull;
+			newLost->value = context->registers[register_id].value;
+			newLost->build_step_id = context->current_build_step_id;
+		}
+		if (DEBUG_GEN)
+			elog(INFO, "Register %i now contains %p/%p", register_id, isnull, value);
+		context->registers[register_id].isnull = isnull;
+		context->registers[register_id].value = value;
+	}
+}
 
 #include "built-stencils.h"
 
@@ -25,9 +131,6 @@ PG_MODULE_MAGIC;
 
 void _PG_init(void);
 void _PG_fini(void);
-
-#define DEBUG_GEN 0
-#define SHOW_TIME 1
 
 static const char *opcodeNames[] = {
 	"EEOP_DONE",
@@ -229,6 +332,20 @@ static const char *opcodeNames[] = {
 	"EEOP_LAST"
 };
 
+static const char *opcodeName(int opcode) {
+	if (opcode > EEOP_LAST)
+		return "EEOP_LAST+n";
+	else
+		return opcodeNames[opcode];
+}
+
+typedef struct CopyJitBuildStep {
+	int build_opcode;
+	int source_step;
+	/* TODO: move these elsewhere */
+	intptr_t register_value;
+	intptr_t register_isnull;
+} CopyJitBuildStep;
 
 typedef struct CodeGen {
 	union Code {
@@ -237,7 +354,10 @@ typedef struct CodeGen {
 		unsigned char *as_char;
 	} code;
 	int code_size;
-	int *offsets;
+	int *offsets;	//TODO: merge with build steps
+	CopyJitBuildStep *build_steps;
+	int allocated_build_steps;
+	int count_build_steps;
 	int trampoline_count;	// count the number of initialized trampolines
 	intptr_t *trampoline_targets;
 } CodeGen;
@@ -285,7 +405,9 @@ copyjit_release_context(JitContext *context)
 static Datum
 ExecRunCompiledExpr(ExprState *state, ExprContext *econtext, bool *isNull)
 {
-	return ((ExprStateEvalFunc) state->evalfunc_private) (state, econtext, isNull);
+	Datum result = ((ExprStateEvalFunc) state->evalfunc_private) (state, econtext, isNull);
+	elog(INFO, "Result is value=%i, isNull=%i", result, *isNull);
+	return result;
 }
 
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -362,7 +484,7 @@ static void apply_arm64_x26 (CodeGen *codeGen, size_t u32offset, intptr_t target
 
 #endif
 
-static intptr_t get_patch_target(ExprState *state, CodeGen *codeGen, size_t next_offset, struct ExprEvalStep *op, const struct Patch *patch)
+static intptr_t get_patch_target(ExprState *state, CopyJitBuildStep *step, CodeGen *codeGen, size_t next_offset, struct ExprEvalStep *op, const struct Patch *patch)
 {
 	intptr_t target;
 	switch (patch->target) {
@@ -412,7 +534,7 @@ static intptr_t get_patch_target(ExprState *state, CodeGen *codeGen, size_t next
 			else if (op->opcode == EEOP_AGG_STRICT_INPUT_CHECK_ARGS)
 				target = (intptr_t) codeGen->code.as_void + codeGen->offsets[op->d.agg_strict_input_check.jumpnull];
 			else
-				elog(ERROR, "Unsupported target TARGET_JUMP_NULL in opcode %s", opcodeNames[op->opcode]);
+				elog(ERROR, "Unsupported target TARGET_JUMP_NULL in opcode %s", opcodeName(op->opcode));
 			break;
 		case TARGET_RESULTSLOT_VALUES:
 			if (op->opcode == EEOP_ASSIGN_TMP || op->opcode == EEOP_ASSIGN_TMP_MAKE_RO)
@@ -420,7 +542,7 @@ static intptr_t get_patch_target(ExprState *state, CodeGen *codeGen, size_t next
 			else if (op->opcode == EEOP_ASSIGN_SCAN_VAR || op->opcode == EEOP_ASSIGN_INNER_VAR || op->opcode == EEOP_ASSIGN_OUTER_VAR)
 				target = (intptr_t) &(state->resultslot->tts_values[op->d.assign_var.resultnum]);
 			else
-				elog(ERROR, "Unsupported target TARGET_RESULTSLOT_VALUES in opcode %s", opcodeNames[op->opcode]);
+				elog(ERROR, "Unsupported target TARGET_RESULTSLOT_VALUES in opcode %s", opcodeName(op->opcode));
 			break;
 		case TARGET_RESULTSLOT_ISNULL:
 			if (op->opcode == EEOP_ASSIGN_TMP || op->opcode == EEOP_ASSIGN_TMP_MAKE_RO)
@@ -428,7 +550,7 @@ static intptr_t get_patch_target(ExprState *state, CodeGen *codeGen, size_t next
 			else if (op->opcode == EEOP_ASSIGN_SCAN_VAR || op->opcode == EEOP_ASSIGN_INNER_VAR || op->opcode == EEOP_ASSIGN_OUTER_VAR)
 				target = (intptr_t) &(state->resultslot->tts_isnull[op->d.assign_var.resultnum]);
 			else
-				elog(ERROR, "Unsupported target TARGET_RESULTSLOT_ISNULL in opcode %s", opcodeNames[op->opcode]);
+				elog(ERROR, "Unsupported target TARGET_RESULTSLOT_ISNULL in opcode %s", opcodeName(op->opcode));
 			break;
 		case TARGET_FUNC_CALL:
 			target = (intptr_t) op->d.func.fn_addr;
@@ -442,10 +564,16 @@ static intptr_t get_patch_target(ExprState *state, CodeGen *codeGen, size_t next
 			else if (op->opcode == EEOP_SCAN_VAR)
 				target = op->d.var.attnum;
 			else
-				elog(ERROR, "Unsupported target TARGET_ATTNUM in opcode %s", opcodeNames[op->opcode]);
+				elog(ERROR, "Unsupported target TARGET_ATTNUM in opcode %s", opcodeName(op->opcode));
 			break;
 		case TARGET_CurrentMemoryContext:
 			target = (intptr_t) &CurrentMemoryContext;
+			break;
+		case TARGET_REGISTER_VALUE:
+			target = step->register_value;
+			break;
+		case TARGET_REGISTER_ISNULL:
+			target = step->register_isnull;
 			break;
 		default:
 			elog(ERROR, "Unsupported target");
@@ -532,19 +660,19 @@ static void apply_patch_with_target (CodeGen *codeGen, size_t offset, intptr_t t
 	}
 }
 
-static void apply_patch (ExprState *state, CodeGen *codeGen, size_t offset, size_t next_offset, struct ExprEvalStep *op, const struct Patch *patch)
+static void apply_patch (ExprState *state, CopyJitBuildStep *step, CodeGen *codeGen, size_t offset, size_t next_offset, struct ExprEvalStep *op, const struct Patch *patch)
 {
-	intptr_t target = get_patch_target(state, codeGen, next_offset, op, patch);
+	intptr_t target = get_patch_target(state, step, codeGen, next_offset, op, patch);
 
 	apply_patch_with_target(codeGen, offset, target, patch);
 }
 
-static size_t apply_stencil (struct Stencil *stencil, ExprState *state, CodeGen *codeGen, size_t offset, size_t next_offset, struct ExprEvalStep *op)
+static size_t apply_stencil (struct Stencil *stencil, ExprState *state, CopyJitBuildStep *step, CodeGen *codeGen, size_t offset, size_t next_offset, struct ExprEvalStep *op)
 {
 	memcpy(codeGen->code.as_void + offset, stencil->code, stencil->code_size);
 	for (int p = 0 ; p < stencil->patch_size ; p++) {
 		const struct Patch *patch = &stencil->patches[p];
-		apply_patch(state, codeGen, offset, next_offset, op, patch);
+		apply_patch(state, step, codeGen, offset, next_offset, op, patch);
 	}
 	return stencil->code_size;
 }
@@ -580,24 +708,92 @@ copyjit_compile_expr(ExprState *state)
 
 	// This offset array is usefull later when jumps appear...
 	codeGen.offsets = malloc(sizeof(int) * state->steps_len);
+
+	// We include some margin for the number of build steps because it's cheap...
+	codeGen.build_steps = malloc(sizeof(CopyJitBuildStep) * 3 * state->steps_len);
+	codeGen.allocated_build_steps = 3 * state->steps_len;
+	codeGen.count_build_steps = 0;
+	CurrentState registerState;
+	registerState.lost_variable_count = 0;
+	for (int r = 0 ; r <REG_COUNT ; r++) {
+		registerState.registers[r].isnull = NULL;
+		registerState.registers[r].value = NULL;
+	}
+
 	for (int opno = 0; opno < state->steps_len; opno++)
 	{
 		struct ExprEvalStep *op = &state->steps[opno];
 		ExprEvalOp opcode = op->opcode;
 		if (DEBUG_GEN)
-			elog(WARNING, "Need to build an %s - %i opcode at %p", opcodeNames[opcode], opcode, op);
+			elog(WARNING, "Need to build an %s - %i opcode at %p", opcodeName(opcode), opcode, op);
 
 		codeGen.offsets[opno] = neededsize;
 
-
 		if (stencils[opcode].code_size == -1) {
-			elog(WARNING, "UNSUPPORTED OPCODE %s", opcodeNames[opcode]);
+			elog(WARNING, "UNSUPPORTED OPCODE %s", opcodeName(opcode));
 			canbuild = false;
 		} else {
-			int new_opcode = dispatch_opcode(op);
-			if (new_opcode != op->opcode) {
-				elog(WARNING, "Dispatching opcode %i (%s) to opcode %i (EEOP_LAST+%i) instead", op->opcode, opcodeNames[op->opcode], opcode, opcode-EEOP_LAST);
+			opcode = dispatch_opcode(op);
+			if (opcode != op->opcode) {
+				if (DEBUG_GEN)
+					elog(INFO, "Dispatching opcode %i (%s) to opcode %i (EEOP_LAST+%i) instead", op->opcode, opcodeName(op->opcode), opcode, opcode-EEOP_LAST);
+				// XXX TODO FIXME WHATEVER we are modifying the opcode here, but what if we can't build in the end???
 				op->opcode = opcode;
+			}
+
+			// Now check the contract to add the required preliminary steps
+			registerState.current_build_step_id = codeGen.count_build_steps;
+			for (int r = 0 ; r < REG_COUNT ; r++) {
+				registerState.fill_requests[r].isnull = NULL;
+				registerState.fill_requests[r].value = NULL;
+			}
+			// We must make sure here that registers contracts are going to be ok
+			// because this implies inserting spill, values or swap calls in-between, modifying the next build step (esp. offsets)
+			if (stencils[opcode].registers_contract) {
+				stencils[opcode].registers_contract(state, op, &registerState);
+			}
+
+			// Inject the required step for filling registers, if needed
+			for (int r = 0 ; r < REG_COUNT ; r++) {
+				if (registerState.fill_requests[r].isnull && registerState.fill_requests[r].value) {
+					if (DEBUG_GEN)
+						elog(INFO, "Build a fill register for reg %i from %p/%p", r, registerState.fill_requests[r].isnull, registerState.fill_requests[r].value);
+
+
+					// TODO this is duplicated, bad bad
+
+					if (r == 0 && *((bool *)registerState.fill_requests[r].isnull))
+						codeGen.build_steps[codeGen.count_build_steps].build_opcode = extra_set_reg0_null__opcode;
+					else if (r == 0)
+						codeGen.build_steps[codeGen.count_build_steps].build_opcode = extra_set_reg0_const__opcode;
+					else if (r == 1 && *((bool *)registerState.fill_requests[r].isnull))
+						codeGen.build_steps[codeGen.count_build_steps].build_opcode = extra_set_reg1_null__opcode;
+					else if (r == 1)
+						codeGen.build_steps[codeGen.count_build_steps].build_opcode = extra_set_reg1_const__opcode;
+					if (DEBUG_GEN)
+						elog(INFO, "Selected opcode %i aka EEOP_LAST+%i", codeGen.build_steps[codeGen.count_build_steps].build_opcode, codeGen.build_steps[codeGen.count_build_steps].build_opcode - EEOP_LAST);
+					codeGen.build_steps[codeGen.count_build_steps].source_step = opno;
+
+					codeGen.build_steps[codeGen.count_build_steps].register_value = *((intptr_t*)registerState.fill_requests[r].value);
+					codeGen.build_steps[codeGen.count_build_steps].register_isnull = *((intptr_t*)registerState.fill_requests[r].isnull);
+					neededsize += stencils[codeGen.build_steps[codeGen.count_build_steps].build_opcode].code_size;
+
+					codeGen.count_build_steps++;
+					if (codeGen.count_build_steps >= codeGen.allocated_build_steps) {
+						codeGen.build_steps = realloc(codeGen.build_steps, sizeof(CopyJitBuildStep) * 2 * codeGen.allocated_build_steps);
+						codeGen.allocated_build_steps *= 2;
+					}
+				}
+			}
+
+			// Ok, now we can build
+
+			codeGen.build_steps[codeGen.count_build_steps].build_opcode = opcode;
+			codeGen.build_steps[codeGen.count_build_steps].source_step = opno;
+			codeGen.count_build_steps++;
+			if (codeGen.count_build_steps >= codeGen.allocated_build_steps) {
+				codeGen.build_steps = realloc(codeGen.build_steps, sizeof(CopyJitBuildStep) * 2 * codeGen.allocated_build_steps);
+				codeGen.allocated_build_steps *= 2;
 			}
 			neededsize += stencils[opcode].code_size;
 			if (TRAMPOLINE_SIZE) {
@@ -625,23 +821,31 @@ copyjit_compile_expr(ExprState *state)
 		context->code = codeGen.code.as_void;
 		context->code_size = neededsize + required_trampolines * TRAMPOLINE_SIZE;
 
-		for (int opno = 0 ; opno < state->steps_len ; opno++)
+		for (int buildStep = 0 ; buildStep < codeGen.count_build_steps ; buildStep++)
 		{
+			int opno = codeGen.build_steps[buildStep].source_step;
 			struct ExprEvalStep *op = &state->steps[opno];
-			ExprEvalOp opcode = ExecEvalStepOp(state, op);
 			size_t next_offset = codeGen.offsets[opno+1];
 			if (DEBUG_GEN)
-				elog(WARNING, "Adding stencil for %s, op address is %p", opcodeNames[opcode], op);
-				offset += apply_stencil(&stencils[opcode], state, &codeGen, offset, next_offset, op);
+				elog(WARNING, "Adding stencil for %s, op address is %p", opcodeName(codeGen.build_steps[buildStep].build_opcode), op);
+			offset += apply_stencil(&stencils[codeGen.build_steps[buildStep].build_opcode], state, &codeGen.build_steps[buildStep], &codeGen, offset, next_offset, op);
 		}
+
+		if (DEBUG_GEN) {
+			elog(WARNING, "Code generated is located at %p for %i bytes (with %i trampolines)", codeGen.code.as_void, codeGen.code_size, required_trampolines);
+			int fd = open("/tmp/code.jit.bin", O_CREAT | O_WRONLY, 0666);
+			int written = write(fd, codeGen.code.as_void, codeGen.code_size);
+			if (written != codeGen.code_size)
+				elog(WARNING, "Failed to dump code - %i", written);
+			close(fd);
+		}
+
 		mprotect_res = mprotect(codeGen.code.as_void, neededsize, PROT_EXEC);
 		if (DEBUG_GEN)
 			elog(WARNING, "Result of mprotect is %i", mprotect_res);
 		state->evalfunc_private = codeGen.code.as_void;
 		state->evalfunc = (ExprStateEvalFunc) codeGen.code.as_void; // We jump through ExecRunCompiledExpr so we can breakpoint, if needed...
 //		state->evalfunc = ExecRunCompiledExpr;
-		if (DEBUG_GEN)
-			elog(WARNING, "Code generated is located at %p for %i bytes (with %i trampolines)", codeGen.code.as_void, codeGen.code_size, required_trampolines);
 	}
 	free(codeGen.offsets);
 	if (codeGen.trampoline_targets)

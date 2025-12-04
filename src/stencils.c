@@ -35,6 +35,8 @@ extern int ATTNUM;
 extern Datum RESULTSLOT_VALUES;
 extern bool RESULTSLOT_ISNULL;
 extern NullableDatum FUNC_ARG;
+extern void REGISTER_ISNULL;
+extern intptr_t REGISTER_VALUE;
 
 extern ExprEvalStep op;
 
@@ -47,10 +49,16 @@ extern Datum JUMP_NULL   (struct ExprState *expression, struct ExprContext *econ
 
 #define GOTO(target) target(expression, econtext, isNull, REGISTER_PASS)
 #define STENCIL(opcode) Datum stencil_##opcode (struct ExprState *expression, struct ExprContext *econtext, bool *isNull, REGISTER_DEFINITION)
-#define STENCILC(opcode,criteria_id,criteria) const char *selector_stencil_ ##opcode ##__ ##criteria_id = #criteria; Datum stencil_##opcode ##__ ##criteria_id (struct ExprState *expression, struct ExprContext *econtext, bool *isNull, REGISTER_DEFINITION)
 
-/// #define VARIANT(real_opcode,variant_id) real_opcode ##__ ##criteria_id
 #define SELECTOR(stencil,criteria) const char *selector_stencil_ ##stencil = #criteria;
+
+#define BEGIN_REGISTER_CONTRACT(stencil) const char *register_contract_ ##stencil = ""
+#define EXPECT(register_id,null_src,value_src) "EXPECT in " #register_id " null:" #null_src " value:" #value_src "\n"
+#define EXPECT_FCINFO(fcinfo) "EXPECT_FCINFO " #fcinfo "\n"
+#define WRITE(register_id,null_src,value_src) "WRITE in " #register_id " null:" #null_src " value:" #value_src "\n"
+#define END_REGISTER_CONTRACT "";
+
+
 
 //////////////////////////////////////
 ///           EEOP_DONE            ///
@@ -59,8 +67,11 @@ extern Datum JUMP_NULL   (struct ExprState *expression, struct ExprContext *econ
 STENCIL(EEOP_DONE)
 {
 	*isNull = expression->resnull;
-	return expression->resvalue;
+	return reg0;
 }
+BEGIN_REGISTER_CONTRACT(EEOP_DONE)
+EXPECT(0, &(expression->resnull), &(expression->resvalue))
+END_REGISTER_CONTRACT
 
 //////////////////////////////////////
 ///           EEOP_CONST           ///
@@ -73,21 +84,21 @@ STENCIL(EEOP_CONST)
 	goto_next;
 }
 
-STENCIL(EEOP_CONST__1)
+STENCIL(EEOP_CONST__null)
 {
 	*(op.resnull) = 1;
 	*(op.resvalue) = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
-SELECTOR(EEOP_CONST__1, op->d.constval.isnull)
+SELECTOR(EEOP_CONST__null, op->d.constval.isnull)
 
-STENCIL(EEOP_CONST__2)
+STENCIL(EEOP_CONST__notnull)
 {
 	*(op.resnull) = 0;
 	*(op.resvalue) = (Datum) &CONST_VALUE; // op.d.constval.value;
 	goto_next;
 }
-SELECTOR(EEOP_CONST__2, !op->d.constval.isnull)
+SELECTOR(EEOP_CONST__notnull, !op->d.constval.isnull)
 
 //////////////////////////////////////
 ///        EEOP_ASSIGN_TMP         ///
@@ -129,46 +140,59 @@ STENCIL(EEOP_FUNCEXPR)
 
 	fcinfo->isnull = false;
 	d = FUNC_CALL(fcinfo);
-	*op.resvalue = d;
-	*op.resnull = fcinfo->isnull;
+	reg0 = d;
+	if (fcinfo->isnull)
+		nullFlags |= (1 << 0);
+	else
+		nullFlags &= ~(1 << 0);
 
 	goto_next;
 }
+BEGIN_REGISTER_CONTRACT(EEOP_FUNCEXPR)
+EXPECT_FCINFO(op->d.func.fcinfo_data)
+WRITE(0, op->resnull, op->resvalue)
+END_REGISTER_CONTRACT
 
 
 //////////////////////////////////////
 ///      EEOP_FUNCEXPR_STRICT      ///
 //////////////////////////////////////
 
-STENCIL(EEOP_FUNCEXPR_STRICT__1)
+/// Variant with int4eq inlined
+STENCIL(EEOP_FUNCEXPR_STRICT__int4eq)
 {
-	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
-	NullableDatum *args = fcinfo->args;
-
-	if (args[0].isnull || args[1].isnull) {
-		*op.resnull = true;
+	if (nullFlags & 3) {
+		// Make sure reg0 is marked as null
+		nullFlags |= (1 << 0);
 	} else {
-		*op.resvalue = (DatumGetInt32(args[0].value) == DatumGetInt32(args[1].value));
-		*op.resnull = false;
+		reg0 = (DatumGetInt32(reg0) == DatumGetInt32(reg1));
 	}
 	goto_next;
 }
-SELECTOR(EEOP_FUNCEXPR_STRICT__1, op->d.func.fn_addr == &int4eq)
+SELECTOR(EEOP_FUNCEXPR_STRICT__int4eq, op->d.func.fn_addr == &int4eq)
+BEGIN_REGISTER_CONTRACT(EEOP_FUNCEXPR_STRICT__int4eq)
+EXPECT(0, &(op->d.func.fcinfo_data->args[0].isnull), &(op->d.func.fcinfo_data->args[0].value))
+EXPECT(1, &(op->d.func.fcinfo_data->args[1].isnull), &(op->d.func.fcinfo_data->args[1].value))
+WRITE(0, op->resnull, op->resvalue)
+END_REGISTER_CONTRACT
 
-STENCIL(EEOP_FUNCEXPR_STRICT__2)
+/// Variant with int4lt inlined
+STENCIL(EEOP_FUNCEXPR_STRICT__int4lt)
 {
-	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
-	NullableDatum *args = fcinfo->args;
-
-	if (args[0].isnull || args[1].isnull) {
-		*op.resnull = true;
+	if (nullFlags & 3) {
+		// Make sure reg0 is marked as null
+		nullFlags |= (1 << 0);
 	} else {
-		*op.resvalue = (DatumGetInt32(args[0].value) < DatumGetInt32(args[1].value));
-		*op.resnull = false;
+		reg0 = (DatumGetInt32(reg0) < DatumGetInt32(reg1));
 	}
 	goto_next;
 }
-SELECTOR(EEOP_FUNCEXPR_STRICT__2, op->d.func.fn_addr == &int4lt)
+SELECTOR(EEOP_FUNCEXPR_STRICT__int4lt, op->d.func.fn_addr == &int4lt)
+BEGIN_REGISTER_CONTRACT(EEOP_FUNCEXPR_STRICT__int4lt)
+EXPECT(0, &(op->d.func.fcinfo_data->args[0].isnull), &(op->d.func.fcinfo_data->args[0].value))
+EXPECT(1, &(op->d.func.fcinfo_data->args[1].isnull), &(op->d.func.fcinfo_data->args[1].value))
+WRITE(0, op->resnull, op->resvalue)
+END_REGISTER_CONTRACT
 
 #if 0
 Datum extra_EEOP_FUNCEXPR_STRICT_CHECKER (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
@@ -203,29 +227,35 @@ STENCIL(EEOP_FUNCEXPR_STRICT)
 
 	fcinfo->isnull = false;
 	d = FUNC_CALL(fcinfo);
-	*op.resvalue = d;
-	*op.resnull = fcinfo->isnull;
+	reg0 = d;
+	if (fcinfo->isnull)
+		nullFlags |= (1 << 0);
+	else
+		nullFlags &= ~(1 << 0);
 
 strictfail:
 	;
 
 	goto_next;
 }
+BEGIN_REGISTER_CONTRACT(EEOP_FUNCEXPR_STRICT)
+EXPECT_FCINFO(op->d.func.fcinfo_data)
+WRITE(0, op->resnull, op->resvalue)
+END_REGISTER_CONTRACT
 
 STENCIL(EEOP_QUAL)
 {
 	/* simplified version of BOOL_AND_STEP for use by ExecQual() */
 
 	/* If argument (also result) is false or null ... */
-	if (*op.resnull ||
-		!DatumGetBool(*op.resvalue))
+	if ((nullFlags & (1 << 0)) ||
+		!DatumGetBool(reg0))
 	{
 		/* ... bail out early, returning FALSE */
-		*op.resnull = false;
-		*op.resvalue = BoolGetDatum(false);
+		nullFlags &= ~(1 << 0);
+		reg0 = BoolGetDatum(false);
 
-		__attribute__((musttail))
-		return JUMP_DONE(expression, econtext, isNull, REGISTER_PASS);
+		__attribute__((musttail)) return JUMP_DONE(expression, econtext, isNull, REGISTER_PASS);
 	}
 
 	/*
@@ -235,6 +265,10 @@ STENCIL(EEOP_QUAL)
 
 	goto_next;
 }
+BEGIN_REGISTER_CONTRACT(EEOP_QUAL)
+EXPECT(0, op->resnull, op->resvalue)
+WRITE(0, op->resnull, op->resvalue)
+END_REGISTER_CONTRACT
 
 STENCIL(EEOP_SQLVALUEFUNCTION)
 {
@@ -253,10 +287,16 @@ STENCIL(EEOP_SCAN_VAR)
 	TupleTableSlot *scanslot = econtext->ecxt_scantuple;
 
 	int attnum = op.d.var.attnum;
-	*op.resvalue = scanslot->tts_values[attnum];
-	*op.resnull = scanslot->tts_isnull[attnum];
+	reg0 = scanslot->tts_values[attnum];
+	if (scanslot->tts_isnull[attnum])
+		nullFlags |= (1 << 0);
+	else
+		nullFlags &= ~(1 << 0);
 	goto_next;
 }
+BEGIN_REGISTER_CONTRACT(EEOP_SCAN_VAR)
+WRITE(0, op->resnull, op->resvalue)
+END_REGISTER_CONTRACT
 
 STENCIL(EEOP_SCAN_FETCHSOME)
 {
@@ -268,6 +308,69 @@ STENCIL(EEOP_SCAN_FETCHSOME)
 	goto_next;
 }
 
+
+// Need a cleaner way to register reg functions
+STENCIL(extra_set_reg0_null)
+{
+	nullFlags |= 1;
+	goto_next;
+}
+
+STENCIL(extra_set_reg0_const)
+{
+	reg0 = (Datum) &REGISTER_VALUE;
+	nullFlags &= 0xfe;
+	goto_next;
+}
+
+STENCIL(extra_set_reg0_value)
+{
+	reg0 = (Datum) &REGISTER_VALUE;
+	if (&REGISTER_ISNULL)
+		nullFlags |= 1;
+	else
+		nullFlags &= 0xfe;
+	goto_next;
+}
+
+STENCIL(extra_set_reg1_null)
+{
+	nullFlags |= 2;
+	goto_next;
+}
+
+STENCIL(extra_set_reg1_const)
+{
+	reg1 = (Datum) &REGISTER_VALUE;
+	nullFlags &= 0xfd;
+	goto_next;
+}
+
+STENCIL(extra_set_reg1_value)
+{
+	reg1 = (Datum) &REGISTER_VALUE;
+	if (&REGISTER_ISNULL)
+		nullFlags |= 2;
+	else
+		nullFlags &= 0xfd;
+	goto_next;
+}
+
+// Will it be ever used?
+STENCIL(extra_swap_reg0_reg1)
+{
+	bool old_reg0_null = (nullFlags & 1);
+	bool old_reg1_null = (nullFlags & 2);
+	nullFlags &= 0xfc;
+	nullFlags += old_reg1_null + (old_reg0_null * 2);
+
+	Datum old_reg0_value = reg0;
+	reg0 = reg1;
+	reg1 = old_reg0_value;
+
+	goto_next;
+}
+#if 0
 STENCIL(EEOP_INNER_VAR)
 {
 	TupleTableSlot *innerslot = econtext->ecxt_innertuple;
@@ -324,7 +427,6 @@ STENCIL(EEOP_ASSIGN_SCAN_VAR)
 }
 
 
-#if 0
 Datum stencil_EEOP_NULLTEST_ISNULL (struct ExprState *expression, struct ExprContext *econtext, bool *isNull)
 {
 	*op.resvalue = BoolGetDatum(*op.resnull);
