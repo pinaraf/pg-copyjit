@@ -72,15 +72,15 @@ extern Datum JUMP_NULL   (struct ExprState *expression, struct ExprContext *econ
 
 
 //////////////////////////////////////
-///           EEOP_DONE            ///
+///      EEOP_DONE_RETURN          ///
 //////////////////////////////////////
 
-STENCIL(EEOP_DONE)
+STENCIL(EEOP_DONE_RETURN)
 {
 	*isNull = expression->resnull;
 	return reg0;
 }
-BEGIN_REGISTER_CONTRACT(EEOP_DONE)
+BEGIN_REGISTER_CONTRACT(EEOP_DONE_RETURN)
 EXPECT(0, &(expression->resnull), &(expression->resvalue))
 END_REGISTER_CONTRACT
 
@@ -170,7 +170,7 @@ END_REGISTER_CONTRACT
 //////////////////////////////////////
 
 /// Variant with int4eq inlined
-STENCIL(EEOP_FUNCEXPR_STRICT__int4eq)
+STENCIL(EEOP_FUNCEXPR_STRICT_2__int4eq)
 {
 	if (nullFlags.reg0 || nullFlags.reg1) {
 		// Make sure reg0 is marked as null
@@ -180,8 +180,8 @@ STENCIL(EEOP_FUNCEXPR_STRICT__int4eq)
 	}
 	goto_next;
 }
-SELECTOR(EEOP_FUNCEXPR_STRICT__int4eq, op->d.func.fn_addr == &int4eq)
-BEGIN_REGISTER_CONTRACT(EEOP_FUNCEXPR_STRICT__int4eq)
+SELECTOR(EEOP_FUNCEXPR_STRICT_2__int4eq, op->d.func.fn_addr == &int4eq)
+BEGIN_REGISTER_CONTRACT(EEOP_FUNCEXPR_STRICT_2__int4eq)
 EXPECT(0, &(op->d.func.fcinfo_data->args[0].isnull), &(op->d.func.fcinfo_data->args[0].value))
 EXPECT(1, &(op->d.func.fcinfo_data->args[1].isnull), &(op->d.func.fcinfo_data->args[1].value))
 WRITE(0, op->resnull, op->resvalue)
@@ -217,7 +217,7 @@ END_REGISTER_CONTRACT
 
 
 /// Variant with int4lt inlined
-STENCIL(EEOP_FUNCEXPR_STRICT__int4lt)
+STENCIL(EEOP_FUNCEXPR_STRICT_2__int4lt)
 {
 	if (nullFlags.reg0 || nullFlags.reg1) {
 		// Make sure reg0 is marked as null
@@ -227,8 +227,8 @@ STENCIL(EEOP_FUNCEXPR_STRICT__int4lt)
 	}
 	goto_next;
 }
-SELECTOR(EEOP_FUNCEXPR_STRICT__int4lt, op->d.func.fn_addr == &int4lt)
-BEGIN_REGISTER_CONTRACT(EEOP_FUNCEXPR_STRICT__int4lt)
+SELECTOR(EEOP_FUNCEXPR_STRICT_2__int4lt, op->d.func.fn_addr == &int4lt)
+BEGIN_REGISTER_CONTRACT(EEOP_FUNCEXPR_STRICT_2__int4lt)
 EXPECT(0, &(op->d.func.fcinfo_data->args[0].isnull), &(op->d.func.fcinfo_data->args[0].value))
 EXPECT(1, &(op->d.func.fcinfo_data->args[1].isnull), &(op->d.func.fcinfo_data->args[1].value))
 WRITE(0, op->resnull, op->resvalue)
@@ -247,6 +247,42 @@ Datum extra_EEOP_FUNCEXPR_STRICT_CHECKER (struct ExprState *expression, struct E
 	goto_next;
 }
 #endif
+
+STENCIL(EEOP_FUNCEXPR_STRICT_2)
+{
+	FunctionCallInfo fcinfo = op.d.func.fcinfo_data;
+	NullableDatum *args = fcinfo->args;
+	int			nargs = op.d.func.nargs;
+	Datum		d;
+
+	/* strict function, so check for NULL args */
+	for (int argno = 0; argno < nargs; argno++)
+	{
+		if (args[argno].isnull)
+		{
+			*op.resnull = true;
+			goto strictfail;
+		}
+	}
+
+	fcinfo->isnull = false;
+	d = FUNC_CALL(fcinfo);
+	reg0 = d;
+	if (fcinfo->isnull)
+		nullFlags |= (1 << 0);
+	else
+		nullFlags &= ~(1 << 0);
+
+strictfail:
+	;
+
+	goto_next;
+}
+BEGIN_REGISTER_CONTRACT(EEOP_FUNCEXPR_STRICT_2)
+EXPECT_FCINFO(op->d.func.fcinfo_data)
+WRITE(0, op->resnull, op->resvalue)
+END_REGISTER_CONTRACT
+
 
 STENCIL(EEOP_FUNCEXPR_STRICT)
 {

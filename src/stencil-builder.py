@@ -155,7 +155,7 @@ class Stencil(object):
         # first, try to get rid of final next_call
         self._strip_final_next_call()
         # and now for specific optimizations
-        if self.arch == "x86_64" and False:
+        if self.arch == "x86_64":
             # now, try to find out a movabs XX, %rax ; jmp *%rax sequence
             mov_and_jmp = b"\x48\xb8\x00\x00\x00\x00\x00\x00\x00\x00\xff\xe0"
             patch_offset = 2

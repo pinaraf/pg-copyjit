@@ -159,23 +159,63 @@ PG_MODULE_MAGIC;
 void _PG_init(void);
 void _PG_fini(void);
 
+static void ResOwnerReleaseJitContext(Datum res);
+
+typedef struct CopyJitContext
+{
+	JitContext base;
+        ResourceOwner resowner;
+	void *code;
+	size_t code_size;
+} CopyJitContext;
+
+
+static const ResourceOwnerDesc jit_resowner_desc =
+{
+        .name = "Copyjit context",
+        .release_phase = RESOURCE_RELEASE_BEFORE_LOCKS,
+        .release_priority = RELEASE_PRIO_JIT_CONTEXTS,
+        .ReleaseResource = ResOwnerReleaseJitContext,
+        .DebugPrint = NULL                      /* the default message is fine */
+};
+
+/* Convenience wrappers over ResourceOwnerRemember/Forget */
+static inline void
+ResourceOwnerRememberJIT(ResourceOwner owner, CopyJitContext *handle)
+{
+        ResourceOwnerRemember(owner, PointerGetDatum(handle), &jit_resowner_desc);
+}
+static inline void
+ResourceOwnerForgetJIT(ResourceOwner owner, CopyJitContext *handle)
+{
+        ResourceOwnerForget(owner, PointerGetDatum(handle), &jit_resowner_desc);
+}
+
+
 static const char *opcodeNames[] = {
-	"EEOP_DONE",
+	"EEOP_DONE_RETURN",
+	"EEOP_DONE_NO_RETURN",
 
 	/* apply slot_getsomeattrs on corresponding tuple slot */
 	"EEOP_INNER_FETCHSOME",
 	"EEOP_OUTER_FETCHSOME",
 	"EEOP_SCAN_FETCHSOME",
+	"EEOP_OLD_FETCHSOME",
+	"EEOP_NEW_FETCHSOME",
 
 	/* compute non-system Var value */
 	"EEOP_INNER_VAR",
 	"EEOP_OUTER_VAR",
 	"EEOP_SCAN_VAR",
+	"EEOP_OLD_VAR",
+	"EEOP_NEW_VAR",
 
 	/* compute system Var value */
 	"EEOP_INNER_SYSVAR",
 	"EEOP_OUTER_SYSVAR",
 	"EEOP_SCAN_SYSVAR",
+	"EEOP_OLD_SYSVAR",
+	"EEOP_NEW_SYSVAR",
 
 	/* compute wholerow Var */
 	"EEOP_WHOLEROW",
@@ -188,6 +228,8 @@ static const char *opcodeNames[] = {
 	"EEOP_ASSIGN_INNER_VAR",
 	"EEOP_ASSIGN_OUTER_VAR",
 	"EEOP_ASSIGN_SCAN_VAR",
+	"EEOP_ASSIGN_OLD_VAR",
+	"EEOP_ASSIGN_NEW_VAR",
 
 	/* assign ExprState's resvalue/resnull to a column of its resultslot */
 	"EEOP_ASSIGN_TMP",
@@ -204,6 +246,8 @@ static const char *opcodeNames[] = {
 	 */
 	"EEOP_FUNCEXPR",
 	"EEOP_FUNCEXPR_STRICT",
+	"EEOP_FUNCEXPR_STRICT_1",
+	"EEOP_FUNCEXPR_STRICT_2",
 	"EEOP_FUNCEXPR_FUSAGE",
 	"EEOP_FUNCEXPR_STRICT_FUSAGE",
 
@@ -394,28 +438,21 @@ copyjit_reset_after_error(void)
 {
 }
 
-typedef struct CopyJitContext
-{
-	JitContext base;
-	void *code;
-	size_t code_size;
-} CopyJitContext;
-
 CopyJitContext *
 copyjit_create_context(int jitFlags)
 {
 	CopyJitContext *context;
 
-	ResourceOwnerEnlargeJIT(CurrentResourceOwner);
+	ResourceOwnerEnlarge(CurrentResourceOwner);
 
 	context = MemoryContextAllocZero(TopMemoryContext,
 									 sizeof(CopyJitContext));
 	context->base.flags = jitFlags;
 
 	/* ensure cleanup */
-	context->base.resowner = CurrentResourceOwner;
+	context->resowner = CurrentResourceOwner;
 	context->code = NULL;
-	ResourceOwnerRememberJIT(CurrentResourceOwner, PointerGetDatum(context));
+	ResourceOwnerRememberJIT(CurrentResourceOwner, context);
 
 	return context;
 }
@@ -803,6 +840,7 @@ _PG_fini(void)
 {
 }
 
+<<<<<<< HEAD
 #if 0
 
 
@@ -1543,3 +1581,18 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 }
 
 #endif
+=======
+
+/*
+ * ResourceOwner callbacks
+ */
+static void
+ResOwnerReleaseJitContext(Datum res)
+{
+        CopyJitContext *context = (CopyJitContext *) DatumGetPointer(res);
+
+        context->resowner = NULL;
+        jit_release_context(&context->base);
+}
+
+>>>>>>> 844fd0c (port to master/pg18)
