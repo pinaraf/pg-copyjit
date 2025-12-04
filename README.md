@@ -5,6 +5,7 @@ Warning
 -------
 
 This code is EXPERIMENTAL!
+The support for PostgreSQL 18+ is in progress, in a side branch, if interested feel free to contact me.
 
 What is this?
 -------------
@@ -12,7 +13,6 @@ What is this?
 When JIT support was introduced in PostgreSQL, a pluggable interface was setup allowing other JIT engines to be developed.
 The one integrated in PostgreSQL relies on LLVM to generate the code for a given expression.
 This new engine here is based on the copy and patch paper, https://arxiv.org/pdf/2011.13127.pdf
-
 
 What is the point?
 ------------------
