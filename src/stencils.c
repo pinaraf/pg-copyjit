@@ -15,7 +15,14 @@
 #include "utils/resowner_private.h"
 #endif
 
-#define REGISTER_DEFINITION char nullFlags, intptr_t reg0, intptr_t reg1
+struct NullFlags {
+	int32_t padding1;
+	int16_t padding2;
+	int8_t reg0;
+	int8_t reg1;
+};
+
+#define REGISTER_DEFINITION struct NullFlags nullFlags, intptr_t reg0, intptr_t reg1
 #define REGISTER_PASS nullFlags, reg0, reg1
 
 #define SET_REGISTER_VALUE(id,value)
@@ -35,7 +42,7 @@ extern int ATTNUM;
 extern Datum RESULTSLOT_VALUES;
 extern bool RESULTSLOT_ISNULL;
 extern NullableDatum FUNC_ARG;
-extern void REGISTER_ISNULL;
+extern intptr_t REGISTER_ISNULL;
 extern intptr_t REGISTER_VALUE;
 
 extern ExprEvalStep op;
@@ -50,12 +57,16 @@ extern Datum JUMP_NULL   (struct ExprState *expression, struct ExprContext *econ
 #define GOTO(target) target(expression, econtext, isNull, REGISTER_PASS)
 #define STENCIL(opcode) Datum stencil_##opcode (struct ExprState *expression, struct ExprContext *econtext, bool *isNull, REGISTER_DEFINITION)
 
+// TODO, this signature is going to change I guess, I use r1 to r4 to get some room but not sure if it's needed
+#define DEFORM_STENCIL(stepname) void stencil_extra_##stepname (TupleTableSlot *slot, intptr_t r1, intptr_t r2, intptr_t r3, intptr_t r4)
+
 #define SELECTOR(stencil,criteria) const char *selector_stencil_ ##stencil = #criteria;
 
 #define BEGIN_REGISTER_CONTRACT(stencil) const char *register_contract_ ##stencil = ""
 #define EXPECT(register_id,null_src,value_src) "EXPECT in " #register_id " null:" #null_src " value:" #value_src "\n"
 #define EXPECT_FCINFO(fcinfo) "EXPECT_FCINFO " #fcinfo "\n"
 #define WRITE(register_id,null_src,value_src) "WRITE in " #register_id " null:" #null_src " value:" #value_src "\n"
+#define TRASH(register_id) "TRASH " #register_id "\n"
 #define END_REGISTER_CONTRACT "";
 
 
@@ -142,9 +153,9 @@ STENCIL(EEOP_FUNCEXPR)
 	d = FUNC_CALL(fcinfo);
 	reg0 = d;
 	if (fcinfo->isnull)
-		nullFlags |= (1 << 0);
+		nullFlags.reg0 = 1;
 	else
-		nullFlags &= ~(1 << 0);
+		nullFlags.reg0 = 0;
 
 	goto_next;
 }
@@ -161,9 +172,9 @@ END_REGISTER_CONTRACT
 /// Variant with int4eq inlined
 STENCIL(EEOP_FUNCEXPR_STRICT__int4eq)
 {
-	if (nullFlags & 3) {
+	if (nullFlags.reg0 || nullFlags.reg1) {
 		// Make sure reg0 is marked as null
-		nullFlags |= (1 << 0);
+		nullFlags.reg0 = 1;
 	} else {
 		reg0 = (DatumGetInt32(reg0) == DatumGetInt32(reg1));
 	}
@@ -176,12 +187,41 @@ EXPECT(1, &(op->d.func.fcinfo_data->args[1].isnull), &(op->d.func.fcinfo_data->a
 WRITE(0, op->resnull, op->resvalue)
 END_REGISTER_CONTRACT
 
+
+/// Variant with int4pl inlined
+STENCIL(EEOP_FUNCEXPR_STRICT__int4pl)
+{
+
+	if (nullFlags.reg0 || nullFlags.reg1) {
+		// Make sure reg0 is marked as null
+		nullFlags.reg0 = 1;
+	} else {
+		reg0 = (DatumGetInt32(reg0) + DatumGetInt32(reg1));
+		// TODO: overflow handling is BROKEN
+		if (reg0 > PG_INT32_MAX || reg0 < PG_INT32_MIN) {
+			reg0 = 0x5EED;
+			ereport(ERROR,
+					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+					 errmsg("integer out of range")));
+		}
+	}
+	goto_next;
+}
+SELECTOR(EEOP_FUNCEXPR_STRICT__int4pl, op->d.func.fn_addr == &int4pl)
+BEGIN_REGISTER_CONTRACT(EEOP_FUNCEXPR_STRICT__int4pl)
+EXPECT(0, &(op->d.func.fcinfo_data->args[0].isnull), &(op->d.func.fcinfo_data->args[0].value))
+EXPECT(1, &(op->d.func.fcinfo_data->args[1].isnull), &(op->d.func.fcinfo_data->args[1].value))
+WRITE(0, op->resnull, op->resvalue)
+END_REGISTER_CONTRACT
+
+
+
 /// Variant with int4lt inlined
 STENCIL(EEOP_FUNCEXPR_STRICT__int4lt)
 {
-	if (nullFlags & 3) {
+	if (nullFlags.reg0 || nullFlags.reg1) {
 		// Make sure reg0 is marked as null
-		nullFlags |= (1 << 0);
+		nullFlags.reg0 = 1;
 	} else {
 		reg0 = (DatumGetInt32(reg0) < DatumGetInt32(reg1));
 	}
@@ -229,9 +269,9 @@ STENCIL(EEOP_FUNCEXPR_STRICT)
 	d = FUNC_CALL(fcinfo);
 	reg0 = d;
 	if (fcinfo->isnull)
-		nullFlags |= (1 << 0);
+		nullFlags.reg0 = 1;
 	else
-		nullFlags &= ~(1 << 0);
+		nullFlags.reg0 = 0;
 
 strictfail:
 	;
@@ -248,11 +288,10 @@ STENCIL(EEOP_QUAL)
 	/* simplified version of BOOL_AND_STEP for use by ExecQual() */
 
 	/* If argument (also result) is false or null ... */
-	if ((nullFlags & (1 << 0)) ||
-		!DatumGetBool(reg0))
+	if (nullFlags.reg0 || !DatumGetBool(reg0))
 	{
 		/* ... bail out early, returning FALSE */
-		nullFlags &= ~(1 << 0);
+		nullFlags.reg0 = 0;
 		reg0 = BoolGetDatum(false);
 
 		__attribute__((musttail)) return JUMP_DONE(expression, econtext, isNull, REGISTER_PASS);
@@ -289,9 +328,9 @@ STENCIL(EEOP_SCAN_VAR)
 	int attnum = op.d.var.attnum;
 	reg0 = scanslot->tts_values[attnum];
 	if (scanslot->tts_isnull[attnum])
-		nullFlags |= (1 << 0);
+		nullFlags.reg0 = 1;
 	else
-		nullFlags &= ~(1 << 0);
+		nullFlags.reg0 = 0;
 	goto_next;
 }
 BEGIN_REGISTER_CONTRACT(EEOP_SCAN_VAR)
@@ -307,19 +346,23 @@ STENCIL(EEOP_SCAN_FETCHSOME)
 
 	goto_next;
 }
+BEGIN_REGISTER_CONTRACT(EEOP_SCAN_FETCHSOME)
+TRASH(0)
+TRASH(1)
+END_REGISTER_CONTRACT
 
 
 // Need a cleaner way to register reg functions
 STENCIL(extra_set_reg0_null)
 {
-	nullFlags |= 1;
+	nullFlags.reg0 = 1;
 	goto_next;
 }
 
 STENCIL(extra_set_reg0_const)
 {
 	reg0 = (Datum) &REGISTER_VALUE;
-	nullFlags &= 0xfe;
+	nullFlags.reg0 = 0;
 	goto_next;
 }
 
@@ -327,22 +370,29 @@ STENCIL(extra_set_reg0_value)
 {
 	reg0 = (Datum) &REGISTER_VALUE;
 	if (&REGISTER_ISNULL)
-		nullFlags |= 1;
+		nullFlags.reg0 = 1;
 	else
-		nullFlags &= 0xfe;
+		nullFlags.reg0 = 0;
+	goto_next;
+}
+
+STENCIL(extra_spill_reg0)
+{
+	REGISTER_VALUE = reg0;
+	REGISTER_ISNULL = nullFlags.reg0;
 	goto_next;
 }
 
 STENCIL(extra_set_reg1_null)
 {
-	nullFlags |= 2;
+	nullFlags.reg1 = 1;
 	goto_next;
 }
 
 STENCIL(extra_set_reg1_const)
 {
 	reg1 = (Datum) &REGISTER_VALUE;
-	nullFlags &= 0xfd;
+	nullFlags.reg1 = 0;
 	goto_next;
 }
 
@@ -350,19 +400,26 @@ STENCIL(extra_set_reg1_value)
 {
 	reg1 = (Datum) &REGISTER_VALUE;
 	if (&REGISTER_ISNULL)
-		nullFlags |= 2;
+		nullFlags.reg1 = 1;
 	else
-		nullFlags &= 0xfd;
+		nullFlags.reg1 = 0;
+	goto_next;
+}
+
+STENCIL(extra_spill_reg1)
+{
+	REGISTER_VALUE = reg1;
+	REGISTER_ISNULL = nullFlags.reg1;
 	goto_next;
 }
 
 // Will it be ever used?
+#if 0
 STENCIL(extra_swap_reg0_reg1)
 {
-	bool old_reg0_null = (nullFlags & 1);
-	bool old_reg1_null = (nullFlags & 2);
-	nullFlags &= 0xfc;
-	nullFlags += old_reg1_null + (old_reg0_null * 2);
+	bool old_reg0_null = nullFlags.reg0;
+	nullFlags.reg0 = nullFlags.reg1;
+	nullFlags.reg1 = old_reg0_null;
 
 	Datum old_reg0_value = reg0;
 	reg0 = reg1;
@@ -370,6 +427,7 @@ STENCIL(extra_swap_reg0_reg1)
 
 	goto_next;
 }
+#endif
 #if 0
 STENCIL(EEOP_INNER_VAR)
 {

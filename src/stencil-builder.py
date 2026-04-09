@@ -198,6 +198,7 @@ class Stencil(object):
         # Now we must play. Parsing it here, it's a bit late, but good enough for the PoC
         line_fcinfo_re = re.compile("^EXPECT_FCINFO (.*)$")
         line_memory_re = re.compile("^(EXPECT|WRITE) in (-?[0-9]+) null:(.*) value:(.*)$")
+        line_trash_re = re.compile("^(TRASH) (-?[0-9]+)$")
         for line in self.registers_contract.strip().splitlines():
             if m := line_fcinfo_re.match(line):
                 out_fd.write("  copyjit_register_fcinfo_access(%s, context);\n" % m.groups()[0])
@@ -206,6 +207,8 @@ class Stencil(object):
                     out_fd.write("  copyjit_register_memory_read_access(%s, %s, %s, context);\n" % (m.groups()[1], m.groups()[2], m.groups()[3]))
                 if m.groups()[0] == "WRITE":
                     out_fd.write("  copyjit_register_memory_write_access(%s, %s, %s, context);\n" % (m.groups()[1], m.groups()[2], m.groups()[3]))
+            elif m := line_trash_re.match(line):
+                out_fd.write("  copyjit_register_memory_write_access(%s, NULL, NULL, context);\n" % m.groups()[1])
         out_fd.write("}\n")
 
     def dump_initializer(self, out_fd):
